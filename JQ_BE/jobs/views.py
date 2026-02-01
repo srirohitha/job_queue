@@ -7,6 +7,7 @@ from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.conf import settings
 from django.utils import timezone
 from rest_framework import exceptions, permissions, status, viewsets
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -426,12 +427,26 @@ class JobViewSet(viewsets.GenericViewSet):
     @action(detail=False, methods=["get"])
     def stats(self, request):
         qs = self.get_queryset()
+        if AUTO_ADVANCE:
+            for job in list(qs):
+                _advance_job(job)
+            qs = self.get_queryset()
+        now = timezone.now()
+        one_minute_ago = now - timedelta(minutes=1)
+        jobs_per_min = qs.filter(
+            status=JobStatus.DONE, updated_at__gte=one_minute_ago
+        ).count()
+        concurrent_jobs = qs.filter(status=JobStatus.RUNNING).count()
         data = {
             "pending": qs.filter(status=JobStatus.PENDING).count(),
             "running": qs.filter(status=JobStatus.RUNNING).count(),
             "done": qs.filter(status=JobStatus.DONE).count(),
             "failed": qs.filter(status=JobStatus.FAILED).count(),
             "dlq": qs.filter(status=JobStatus.DLQ).count(),
+            "jobsPerMin": jobs_per_min,
+            "jobsPerMinLimit": getattr(settings, "JOBS_PER_MIN_LIMIT", 8),
+            "concurrentJobs": concurrent_jobs,
+            "concurrentJobsLimit": getattr(settings, "CONCURRENT_JOBS_LIMIT", 5),
         }
         return api_response(data)
 

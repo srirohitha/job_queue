@@ -1,4 +1,4 @@
-import { Job, JobEvent, JobStage, JobStatus } from '../types/job';
+import { DashboardStats, Job, JobEvent, JobStage, JobStatus } from '../types/job';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api';
 
@@ -143,6 +143,13 @@ export const fetchJobs = async (token: string) => {
   const data = await parseResponse<any>(response);
   const items = Array.isArray(data) ? data : data?.items ?? [];
   return items.map(mapJob) as Job[];
+};
+
+export const fetchStats = async (token: string) => {
+  const response = await fetch(`${API_BASE_URL}/jobs/stats/`, {
+    headers: buildHeaders(token),
+  });
+  return parseResponse<DashboardStats>(response);
 };
 
 export const createJob = async (token: string, input: CreateJobInput) => {

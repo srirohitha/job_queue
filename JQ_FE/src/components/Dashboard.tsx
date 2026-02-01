@@ -1,19 +1,66 @@
 import { Clock, PlayCircle, CheckCircle, XCircle, AlertTriangle, Gauge, Users } from 'lucide-react';
 import { SummaryCard } from './SummaryCard';
+import { useCallback, useEffect, useState } from 'react';
 import { JobSubmitPanel } from './JobSubmitPanel';
 import { JobsTable } from './JobsTable';
-import { getDashboardStats } from '../lib/mock-data';
 import { useJobPolling } from '../hooks/useJobPolling';
 import { useJobs } from '../context/JobContext';
+import { useAuth } from '../context/AuthContext';
+import { fetchStats } from '../lib/api';
+import { DashboardStats } from '../types/job';
+import { toast } from 'sonner';
 
 export function Dashboard() {
   const { jobs, submitJob, refreshJobs } = useJobs();
+  const { token, isBootstrapping } = useAuth();
   const autoRefresh = true;
-  const stats = getDashboardStats(jobs);
+  const [stats, setStats] = useState<DashboardStats>({
+    pending: 0,
+    running: 0,
+    done: 0,
+    failed: 0,
+    dlq: 0,
+    jobsPerMin: 0,
+    jobsPerMinLimit: 8,
+    concurrentJobs: 0,
+    concurrentJobsLimit: 5,
+  });
+
+  const refreshStats = useCallback(async () => {
+    if (!token) {
+      setStats({
+        pending: 0,
+        running: 0,
+        done: 0,
+        failed: 0,
+        dlq: 0,
+        jobsPerMin: 0,
+        jobsPerMinLimit: 8,
+        concurrentJobs: 0,
+        concurrentJobsLimit: 5,
+      });
+      return;
+    }
+    try {
+      const data = await fetchStats(token);
+      setStats(data);
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to load dashboard stats');
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!isBootstrapping) {
+      refreshStats();
+    }
+  }, [isBootstrapping, refreshStats]);
 
   // Enable polling for real-time updates
   useJobPolling({
-    onPoll: refreshJobs,
+    onPoll: async () => {
+      await refreshJobs();
+      await refreshStats();
+    },
     enabled: autoRefresh,
     interval: 3000
   });
@@ -62,14 +109,14 @@ export function Dashboard() {
             value={`${stats.jobsPerMin} / ${stats.jobsPerMinLimit}`}
             icon={Gauge}
             color="blue"
-            subtitle={`${Math.round((stats.jobsPerMin / stats.jobsPerMinLimit) * 100)}% quota used`}
+            subtitle={`${Math.round((stats.jobsPerMin / Math.max(stats.jobsPerMinLimit, 1)) * 100)}% quota used`}
           />
           <SummaryCard
             title="Concurrent Jobs"
             value={`${stats.concurrentJobs} / ${stats.concurrentJobsLimit}`}
             icon={Users}
             color="green"
-            subtitle={`${Math.round((stats.concurrentJobs / stats.concurrentJobsLimit) * 100)}% quota used`}
+            subtitle={`${Math.round((stats.concurrentJobs / Math.max(stats.concurrentJobsLimit, 1)) * 100)}% quota used`}
           />
         </div>
       </div>

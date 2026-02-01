@@ -203,8 +203,9 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                     <TableHead>Stage</TableHead>
                     <TableHead className="w-[200px]">Progress</TableHead>
                     <TableHead>Attempts</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead className="text-center">Details</TableHead>
+                  <TableHead className="text-center">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -255,8 +256,8 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                       <TableCell className="text-sm text-gray-600">
                         {formatDate(job.createdAt)}
                       </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center">
                           <Button
                             variant="ghost"
                             size="sm"
@@ -265,6 +266,10 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                             <ExternalLink className="h-4 w-4 mr-1" />
                             Details
                           </Button>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center">
                           {(job.status === 'FAILED' || job.status === 'DONE') && (
                             <Button
                               variant="outline"
@@ -285,6 +290,11 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                               Replay
                             </Button>
                           )}
+                          {job.status !== 'FAILED' &&
+                            job.status !== 'DONE' &&
+                            job.status !== 'DLQ' && (
+                              <span className="text-xs text-gray-400">—</span>
+                            )}
                         </div>
                       </TableCell>
                     </TableRow>
