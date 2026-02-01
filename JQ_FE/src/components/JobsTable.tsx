@@ -265,7 +265,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                             <ExternalLink className="h-4 w-4 mr-1" />
                             Details
                           </Button>
-                          {job.status === 'FAILED' && (
+                          {(job.status === 'FAILED' || job.status === 'DONE') && (
                             <Button
                               variant="outline"
                               size="sm"

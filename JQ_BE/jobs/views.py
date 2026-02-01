@@ -50,6 +50,107 @@ def _parse_csv(file_obj):
     return rows
 
 
+def _normalize_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _extract_config(payload):
+    config = payload.get("config") if isinstance(payload, dict) else {}
+    config = config if isinstance(config, dict) else {}
+    required_fields = _normalize_list(
+        config.get("requiredFields") or config.get("required_fields")
+    )
+    dedupe_on = _normalize_list(config.get("dedupeOn") or config.get("dedupe_on"))
+    drop_nulls = config.get("dropNulls")
+    if drop_nulls is None:
+        drop_nulls = config.get("drop_nulls", False)
+    strict_mode = config.get("strictMode")
+    if strict_mode is None:
+        strict_mode = config.get("strict_mode", False)
+    numeric_field = config.get("numericField") or config.get("numeric_field")
+    return {
+        "required_fields": required_fields,
+        "dedupe_on": dedupe_on,
+        "drop_nulls": bool(drop_nulls),
+        "strict_mode": bool(strict_mode),
+        "numeric_field": numeric_field,
+    }
+
+
+def _is_null(value):
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    return False
+
+
+def _process_rows(rows, config):
+    required_fields = config.get("required_fields", [])
+    dedupe_on = config.get("dedupe_on", [])
+    drop_nulls = config.get("drop_nulls", False)
+    strict_mode = config.get("strict_mode", False)
+    required_set = set(required_fields)
+    seen = set()
+
+    valid_rows = []
+    invalid_rows = 0
+    nulls_dropped = 0
+    duplicates_removed = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            invalid_rows += 1
+            continue
+
+        if required_fields:
+            missing_required = [field for field in required_fields if field not in row]
+            if missing_required:
+                invalid_rows += 1
+                continue
+            missing_values = [field for field in required_fields if _is_null(row.get(field))]
+            if missing_values:
+                if drop_nulls:
+                    nulls_dropped += 1
+                invalid_rows += 1
+                continue
+
+        if strict_mode and required_set:
+            extra_fields = set(row.keys()) - required_set
+            if extra_fields:
+                invalid_rows += 1
+                continue
+
+        if drop_nulls:
+            has_nulls = any(_is_null(value) for value in row.values())
+            if has_nulls:
+                nulls_dropped += 1
+                invalid_rows += 1
+                continue
+
+        if dedupe_on:
+            key = tuple(str(row.get(field, "")) for field in dedupe_on)
+            if key in seen:
+                duplicates_removed += 1
+                continue
+            seen.add(key)
+
+        valid_rows.append(row)
+
+    return {
+        "valid_rows": valid_rows,
+        "invalid_rows": invalid_rows,
+        "duplicates_removed": duplicates_removed,
+        "nulls_dropped": nulls_dropped,
+    }
+
+
 def _compute_numeric_stats(rows, numeric_field):
     values = []
     for row in rows:
@@ -80,24 +181,26 @@ def _build_output_result(job):
     payload = job.input_payload or {}
     rows = payload.get("rows") if isinstance(payload, dict) else []
     rows = rows if isinstance(rows, list) else []
-    config = payload.get("config") if isinstance(payload, dict) else {}
-    config = config if isinstance(config, dict) else {}
+    config = _extract_config(payload)
     total_processed = len(rows)
-    numeric_field = config.get("numericField") or config.get("numeric_field")
+    processed = _process_rows(rows, config)
+    numeric_field = config.get("numeric_field")
     numeric_stats = (
-        _compute_numeric_stats(rows, numeric_field) if numeric_field else None
+        _compute_numeric_stats(processed["valid_rows"], numeric_field)
+        if numeric_field
+        else None
     )
     output = {
         "totalProcessed": total_processed,
-        "totalValid": total_processed,
-        "totalInvalid": 0,
-        "duplicatesRemoved": 0,
-        "nullsDropped": 0,
+        "totalValid": len(processed["valid_rows"]),
+        "totalInvalid": processed["invalid_rows"],
+        "duplicatesRemoved": processed["duplicates_removed"],
+        "nullsDropped": processed["nulls_dropped"],
     }
     if numeric_stats:
         output["numericStats"] = numeric_stats
-    if rows:
-        output["outputData"] = rows[:50]
+    if processed["valid_rows"]:
+        output["outputData"] = processed["valid_rows"][:50]
     return output
 
 
@@ -285,8 +388,9 @@ class JobViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=["post"])
     def retry(self, request, pk=None):
         job = self.get_object()
-        if job.status != JobStatus.FAILED:
-            raise exceptions.ValidationError("Only failed jobs can be retried.")
+        if job.status not in {JobStatus.FAILED, JobStatus.DONE}:
+            raise exceptions.ValidationError("Only failed or completed jobs can be retried.")
+        previous_status = job.status
         job.status = JobStatus.PENDING
         job.stage = JobStage.VALIDATING
         job.progress = 0
@@ -296,7 +400,8 @@ class JobViewSet(viewsets.GenericViewSet):
         job.next_retry_at = None
         job.locked_by = None
         job.lease_until = None
-        job.add_event(JobEventType.SUBMITTED, {"retried": True})
+        job.output_result = {}
+        job.add_event(JobEventType.SUBMITTED, {"retried": True, "fromStatus": previous_status})
         job.save()
         return api_response(JobSerializer(job).data)
 
@@ -383,8 +488,8 @@ class JobViewSet(viewsets.GenericViewSet):
         job.processed_rows = job.total_rows
         job.locked_by = None
         job.lease_until = None
-        output_result = serializer.validated_data.get("output_result") or {}
-        job.output_result = output_result
+        output_result = serializer.validated_data.get("output_result")
+        job.output_result = output_result or _build_output_result(job)
         job.add_event(JobEventType.DONE)
         job.save()
         return api_response(JobSerializer(job).data)

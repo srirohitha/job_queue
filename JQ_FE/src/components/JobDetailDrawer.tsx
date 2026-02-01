@@ -196,7 +196,7 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
 
               {/* Action Buttons */}
               <div className="flex gap-2 pt-2">
-                {job.status === 'FAILED' && (
+                {(job.status === 'FAILED' || job.status === 'DONE') && (
                   <Button onClick={handleRetry} className="flex-1">
                     <RotateCw className="h-4 w-4 mr-2" />
                     Retry Job

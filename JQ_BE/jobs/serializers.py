@@ -52,6 +52,10 @@ class JobCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"payload": "payload.rows must be a list."})
             if len(rows) == 0:
                 raise serializers.ValidationError({"payload": "payload.rows cannot be empty."})
+            if any(not isinstance(row, dict) for row in rows):
+                raise serializers.ValidationError(
+                    {"payload": "payload.rows must contain only objects."}
+                )
         elif input_mode == "csv":
             if csv_file is None:
                 raise serializers.ValidationError({"csv_file": "csv_file is required."})
