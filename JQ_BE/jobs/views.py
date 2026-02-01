@@ -26,6 +26,28 @@ from .serializers import (
 
 User = get_user_model()
 
+def _enforce_jobs_per_min_limit(user) -> None:
+    limit = getattr(settings, "JOBS_PER_MIN_LIMIT", 4)
+    if not limit:
+        return
+    now = timezone.now()
+    window_start = now - timedelta(minutes=1)
+    used = Job.objects.filter(tenant=user, last_ran_at__gte=window_start).count()
+    if used < limit:
+        return
+    oldest = (
+        Job.objects.filter(tenant=user, last_ran_at__gte=window_start)
+        .order_by("last_ran_at")
+        .first()
+    )
+    wait = 60
+    if oldest and oldest.last_ran_at:
+        wait = max(1, int(60 - (now - oldest.last_ran_at).total_seconds()))
+    raise exceptions.Throttled(
+        wait=wait,
+        detail=f"Rate limit exceeded: max {limit} job triggers per minute. Try again in ~{wait}s.",
+    )
+
 
 def _parse_config(value):
     if value is None:
@@ -163,6 +185,8 @@ class JobViewSet(viewsets.GenericViewSet):
             if existing:
                 return api_response(JobSerializer(existing).data)
 
+        _enforce_jobs_per_min_limit(request.user)
+
         total_rows = len(payload.get("rows", []))
         max_attempts = data.get("max_attempts") or 3
 
@@ -180,6 +204,7 @@ class JobViewSet(viewsets.GenericViewSet):
             input_payload=payload,
             output_result={},
             events=[],
+            last_ran_at=timezone.now(),
         )
         job.add_event(JobEventType.SUBMITTED)
         job.save()
@@ -193,6 +218,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job = self.get_object()
         if job.status not in {JobStatus.FAILED, JobStatus.DONE}:
             raise exceptions.ValidationError("Only failed or completed jobs can be retried.")
+        _enforce_jobs_per_min_limit(request.user)
         previous_status = job.status
         job.status = JobStatus.PENDING
         job.stage = JobStage.VALIDATING
@@ -204,6 +230,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.locked_by = None
         job.lease_until = None
         job.output_result = {}
+        job.last_ran_at = timezone.now()
         job.add_event(JobEventType.SUBMITTED, {"retried": True, "fromStatus": previous_status})
         job.save()
         from .tasks import proc
@@ -216,6 +243,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job = self.get_object()
         if job.status != JobStatus.DLQ:
             raise exceptions.ValidationError("Only DLQ jobs can be replayed.")
+        _enforce_jobs_per_min_limit(request.user)
         job.status = JobStatus.PENDING
         job.stage = JobStage.VALIDATING
         job.progress = 0
@@ -225,6 +253,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.next_retry_at = None
         job.locked_by = None
         job.lease_until = None
+        job.last_ran_at = timezone.now()
         job.add_event(JobEventType.SUBMITTED, {"replayed": True})
         job.save()
         from .tasks import proc
@@ -237,9 +266,7 @@ class JobViewSet(viewsets.GenericViewSet):
         qs = self.get_queryset()
         now = timezone.now()
         one_minute_ago = now - timedelta(minutes=1)
-        jobs_per_min = qs.filter(
-            status=JobStatus.DONE, updated_at__gte=one_minute_ago
-        ).count()
+        jobs_per_min = qs.filter(last_ran_at__gte=one_minute_ago).count()
         concurrent_jobs = qs.filter(status=JobStatus.RUNNING).count()
         data = {
             "pending": qs.filter(status=JobStatus.PENDING).count(),
@@ -262,6 +289,17 @@ class JobViewSet(viewsets.GenericViewSet):
         worker_id = data["worker_id"]
         lease_seconds = data.get("lease_seconds", 120)
 
+        concurrent_limit = getattr(settings, "CONCURRENT_JOBS_LIMIT", 2)
+        if (
+            concurrent_limit
+            and Job.objects.filter(tenant=request.user, status=JobStatus.RUNNING).count()
+            >= concurrent_limit
+        ):
+            raise exceptions.Throttled(
+                wait=5,
+                detail=f"Concurrent job limit reached ({concurrent_limit}). Try again shortly.",
+            )
+
         job = (
             Job.objects.filter(tenant=request.user, status=JobStatus.PENDING)
             .order_by("created_at")
@@ -276,6 +314,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.processed_rows = max(job.processed_rows, int(job.total_rows * 0.05))
         job.attempts = max(job.attempts, 1)
         job.locked_by = worker_id
+        job.last_ran_at = timezone.now()
         job.lease_until = timezone.now() + timedelta(seconds=lease_seconds)
         job.add_event(JobEventType.LEASED, {"worker": worker_id})
         job.save()

@@ -17,14 +17,22 @@ The API will be available at `http://localhost:8000/api`.
 This backend uses Celery for job processing and Redis as the broker.
 
 1. Start Redis (default `redis://localhost:6379/0`).
-2. Start the Celery worker:
-   `celery -A jq_be worker -l info`
+2. Start the Celery worker (job processing queue):
+   `celery -A jq_be worker -l info -Q jobs`
+3. Start the Celery beat scheduler (retry/DLQ reconciliation):
+   `celery -A jq_be beat -l info`
+4. Start the reconciliation worker (handles retries/DLQ):
+   `celery -A jq_be worker -l info -Q reconcile --pool=solo`
 
 You can override defaults with:
 - `CELERY_BROKER_URL`
 - `CELERY_RESULT_BACKEND`
 - `JOBS_PER_MIN_LIMIT`
 - `CONCURRENT_JOBS_LIMIT`
+- `JOB_LEASE_SECONDS`
+- `JOB_RETRY_DELAY_SECONDS`
+- `JOB_PENDING_TIMEOUT_SECONDS`
+- `JOB_RETRY_SCAN_SECONDS`
 
 ## Auth
 

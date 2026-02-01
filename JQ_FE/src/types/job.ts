@@ -14,6 +14,7 @@ export interface Job {
   maxAttempts: number;
   createdAt: string;
   updatedAt: string;
+  lastRanAt?: string | null;
   lockedBy?: string;
   leaseUntil?: string;
   nextRetryAt?: string;

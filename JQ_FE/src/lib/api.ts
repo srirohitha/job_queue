@@ -31,6 +31,7 @@ interface ApiJob {
   max_attempts: number;
   created_at: string;
   updated_at: string;
+  last_ran_at?: string | null;
   locked_by?: string;
   lease_until?: string;
   next_retry_at?: string;
@@ -86,6 +87,7 @@ const mapJob = (job: ApiJob): Job => ({
   maxAttempts: job.max_attempts,
   createdAt: job.created_at,
   updatedAt: job.updated_at,
+  lastRanAt: job.last_ran_at,
   lockedBy: job.locked_by,
   leaseUntil: job.lease_until,
   nextRetryAt: job.next_retry_at,

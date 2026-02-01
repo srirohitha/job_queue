@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import timedelta
 import os
 
 import dj_database_url
@@ -134,3 +135,28 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_DEFAULT_QUEUE = "jobs"
+CELERY_TASK_ROUTES = {
+    "jobs.proc": {"queue": "jobs"},
+    "jobs.reconcile": {"queue": "reconcile"},
+}
+
+JOB_LEASE_SECONDS = int(os.getenv("JOB_LEASE_SECONDS", "60"))
+JOB_RETRY_DELAY_SECONDS = int(os.getenv("JOB_RETRY_DELAY_SECONDS", "5"))
+JOB_PENDING_TIMEOUT_SECONDS = int(os.getenv("JOB_PENDING_TIMEOUT_SECONDS", "10"))
+JOB_RETRY_SCAN_SECONDS = int(os.getenv("JOB_RETRY_SCAN_SECONDS", "5"))
+JOB_JSON_ROW_DELAY_MIN_SECONDS = float(
+    os.getenv("JOB_JSON_ROW_DELAY_MIN_SECONDS", "2")
+)
+JOB_JSON_ROW_DELAY_MAX_SECONDS = float(
+    os.getenv("JOB_JSON_ROW_DELAY_MAX_SECONDS", "3")
+)
+JOB_MIN_RUNNING_SECONDS = float(os.getenv("JOB_MIN_RUNNING_SECONDS", "6"))
+
+CELERY_BEAT_SCHEDULE = {
+    "jobs-reconcile": {
+        "task": "jobs.reconcile",
+        "schedule": timedelta(seconds=JOB_RETRY_SCAN_SECONDS),
+        "options": {"queue": "reconcile"},
+    }
+}

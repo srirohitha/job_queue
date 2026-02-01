@@ -45,13 +45,14 @@ const stageColors = {
 };
 
 export function JobsTable({ jobs, limit }: JobsTableProps) {
-  const { retryJob, replayJob, deleteJob, refreshJobs } = useJobs();
+  const { retryJob, replayJob, deleteJob, refreshJobs, isServerDown } = useJobs();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | JobStatus>('ALL');
   const [timeRange, setTimeRange] = useState('all');
   const [sortBy, setSortBy] = useState('createdAt');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const isOffline = isServerDown;
 
   useJobPolling({
     enabled: autoRefresh,
@@ -94,15 +95,58 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
     toast.success('Jobs refreshed');
   };
 
+  const normalizeQuery = (value: string) => value.trim().toLowerCase();
+  const query = normalizeQuery(searchTerm);
+  const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const matchesTimeRange = (dateString: string) => {
+    if (timeRange === 'all') {
+      return true;
+    }
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+      return false;
+    }
+    const timestamp = date.getTime();
+    if (timeRange === 'today') {
+      return timestamp >= startOfToday.getTime();
+    }
+    const days = timeRange === 'week' ? 7 : 30;
+    return timestamp >= now.getTime() - days * 24 * 60 * 60 * 1000;
+  };
+
+  const getSortValue = (job: Job) => {
+    if (sortBy === 'progress') {
+      return job.progress;
+    }
+    if (sortBy === 'updatedAt') {
+      return new Date(job.updatedAt).getTime() || 0;
+    }
+    return new Date(job.createdAt).getTime() || 0;
+  };
+
   // Filter and sort jobs
   let filteredJobs = jobs.filter(job => {
-    const matchesSearch = job.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         job.label.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = !query ||
+      job.id.toLowerCase().includes(query) ||
+      job.label.toLowerCase().includes(query);
     const matchesStatus = statusFilter === 'ALL' || job.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    const matchesRange = matchesTimeRange(job.createdAt);
+    return matchesSearch && matchesStatus && matchesRange;
   });
 
-  // Apply limit if specified
+  filteredJobs = [...filteredJobs].sort((a, b) => {
+    const aValue = getSortValue(a);
+    const bValue = getSortValue(b);
+    if (aValue === bValue) {
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    }
+    return bValue - aValue;
+  });
+
+  // Apply limit if specified (after sort)
   if (limit) {
     filteredJobs = filteredJobs.slice(0, limit);
   }
@@ -198,6 +242,11 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
           </div>
 
           {/* Table */}
+          {isOffline && (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+              Server is offline. Showing last known jobs. Retrying in a few seconds.
+            </div>
+          )}
           {filteredJobs.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500">No jobs found matching your criteria</p>
@@ -215,12 +264,14 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                     <TableHead className="w-[200px]">Progress</TableHead>
                     <TableHead>Attempts</TableHead>
                   <TableHead>Created</TableHead>
+                  <TableHead>Last Ran</TableHead>
                   <TableHead className="text-center">Action</TableHead>
                   <TableHead className="text-center">Details</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredJobs.map((job) => (
+                  {filteredJobs.map((job) => {
+                    return (
                     <TableRow key={job.id} className="hover:bg-gray-50">
                       <TableCell className="font-mono text-xs">
                         <div className="flex items-center gap-2">
@@ -267,6 +318,9 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                       <TableCell className="text-sm text-gray-600">
                         {formatDate(job.createdAt)}
                       </TableCell>
+                      <TableCell className="text-sm text-gray-600">
+                        {job.lastRanAt ? formatDate(job.lastRanAt) : '—'}
+                      </TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-2">
                           {(job.status === 'FAILED' || job.status === 'DONE') && (
@@ -274,6 +328,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                               variant="outline"
                               size="sm"
                               onClick={() => handleRetry(job)}
+                              disabled={isOffline}
                             >
                               <RotateCw className="h-4 w-4 mr-1" />
                               Retry
@@ -284,6 +339,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                               variant="outline"
                               size="sm"
                               onClick={() => handleReplay(job)}
+                              disabled={isOffline}
                             >
                               <Play className="h-4 w-4 mr-1" />
                               Replay
@@ -295,6 +351,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                             onClick={() => handleDelete(job)}
                             title="Delete job"
                             className="text-red-600 hover:text-red-700"
+                            disabled={isOffline}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -313,7 +370,8 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

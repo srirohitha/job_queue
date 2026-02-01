@@ -18,6 +18,7 @@ class JobSerializer(serializers.ModelSerializer):
             "max_attempts",
             "created_at",
             "updated_at",
+            "last_ran_at",
             "locked_by",
             "lease_until",
             "next_retry_at",

@@ -7,6 +7,7 @@ import { useAuth } from './AuthContext';
 interface JobContextType {
   jobs: Job[];
   isLoading: boolean;
+  isServerDown: boolean;
   refreshJobs: () => Promise<void>;
   submitJob: (input: CreateJobInput) => Promise<Job | null>;
   retryJob: (jobId: string) => Promise<Job | null>;
@@ -20,19 +21,28 @@ export function JobProvider({ children }: { children: ReactNode }) {
   const { token, isBootstrapping } = useAuth();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isServerDown, setIsServerDown] = useState(false);
 
   const refreshJobs = useCallback(async () => {
     if (!token) {
       setJobs([]);
+      setIsServerDown(false);
       return;
     }
     setIsLoading(true);
     try {
       const data = await fetchJobs(token);
       setJobs(data);
+      setIsServerDown(false);
     } catch (error: any) {
-      setJobs([]);
-      toast.error(error?.message || 'Failed to load jobs');
+      if (error?.status === 401 || error?.status === 403) {
+        setJobs([]);
+        setIsServerDown(false);
+        toast.error('Session expired. Please sign in again.');
+      } else {
+        setIsServerDown(true);
+        toast.error(error?.message || 'Server unavailable. Retrying shortly.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -124,11 +134,22 @@ export function JobProvider({ children }: { children: ReactNode }) {
     }
   }, [isBootstrapping, refreshJobs]);
 
+  useEffect(() => {
+    if (!isServerDown || !token) {
+      return;
+    }
+    const retryTimer = setTimeout(() => {
+      refreshJobs();
+    }, 5000);
+    return () => clearTimeout(retryTimer);
+  }, [isServerDown, token, refreshJobs]);
+
   return (
     <JobContext.Provider
       value={{
         jobs,
         isLoading,
+        isServerDown,
         refreshJobs,
         submitJob,
         retryJob: handleRetryJob,
