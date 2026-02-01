@@ -16,6 +16,7 @@ export function Dashboard() {
   const autoRefresh = true;
   const [stats, setStats] = useState<DashboardStats>({
     pending: 0,
+    throttled: 0,
     running: 0,
     done: 0,
     failed: 0,
@@ -30,6 +31,7 @@ export function Dashboard() {
     if (!token) {
       setStats({
         pending: 0,
+        throttled: 0,
         running: 0,
         done: 0,
         failed: 0,
@@ -70,12 +72,18 @@ export function Dashboard() {
       {/* Summary Cards */}
       <div>
         <h2 className="text-2xl font-semibold mb-4">Overview</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-4">
           <SummaryCard
             title="Pending"
             value={stats.pending}
             icon={Clock}
             color="gray"
+          />
+          <SummaryCard
+            title="Throttled"
+            value={stats.throttled ?? 0}
+            icon={AlertTriangle}
+            color="amber"
           />
           <SummaryCard
             title="Running"

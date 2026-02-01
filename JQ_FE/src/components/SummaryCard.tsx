@@ -5,7 +5,7 @@ interface SummaryCardProps {
   title: string;
   value: number | string;
   icon: LucideIcon;
-  color: 'gray' | 'blue' | 'green' | 'red' | 'purple';
+  color: 'gray' | 'blue' | 'green' | 'red' | 'purple' | 'amber';
   subtitle?: string;
 }
 
@@ -15,6 +15,7 @@ const colorClasses = {
   green: 'bg-green-100 text-green-700',
   red: 'bg-red-100 text-red-700',
   purple: 'bg-purple-100 text-purple-700',
+  amber: 'bg-amber-100 text-amber-700',
 };
 
 export function SummaryCard({ title, value, icon: Icon, color, subtitle }: SummaryCardProps) {

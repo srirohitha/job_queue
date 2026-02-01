@@ -5,6 +5,7 @@ from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import exceptions, permissions, status, viewsets
@@ -12,7 +13,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 
-from .models import Job, JobEventType, JobStage, JobStatus
+from .models import Job, JobEventType, JobStage, JobStatus, JobTrigger
 from .processing import build_output_result
 from .responses import api_response
 from .serializers import (
@@ -27,22 +28,23 @@ from .serializers import (
 User = get_user_model()
 
 def _enforce_jobs_per_min_limit(user) -> None:
+    """Enforce jobs-per-minute: count distinct triggers in the last minute (same job run twice = 2)."""
     limit = getattr(settings, "JOBS_PER_MIN_LIMIT", 4)
     if not limit:
         return
     now = timezone.now()
     window_start = now - timedelta(minutes=1)
-    used = Job.objects.filter(tenant=user, last_ran_at__gte=window_start).count()
+    used = JobTrigger.objects.filter(tenant=user, triggered_at__gte=window_start).count()
     if used < limit:
         return
     oldest = (
-        Job.objects.filter(tenant=user, last_ran_at__gte=window_start)
-        .order_by("last_ran_at")
+        JobTrigger.objects.filter(tenant=user, triggered_at__gte=window_start)
+        .order_by("triggered_at")
         .first()
     )
     wait = 60
-    if oldest and oldest.last_ran_at:
-        wait = max(1, int(60 - (now - oldest.last_ran_at).total_seconds()))
+    if oldest and oldest.triggered_at:
+        wait = max(1, int(60 - (now - oldest.triggered_at).total_seconds()))
     raise exceptions.Throttled(
         wait=wait,
         detail=f"Rate limit exceeded: max {limit} job triggers per minute. Try again in ~{wait}s.",
@@ -129,7 +131,13 @@ class JobViewSet(viewsets.GenericViewSet):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
-        return Job.objects.filter(tenant=self.request.user).order_by("-created_at")
+        qs = Job.objects.filter(tenant=self.request.user).order_by("-created_at")
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            allowed = {s[0] for s in JobStatus.choices}
+            if status_param.upper() in allowed:
+                qs = qs.filter(status=status_param.upper())
+        return qs
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -208,6 +216,7 @@ class JobViewSet(viewsets.GenericViewSet):
         )
         job.add_event(JobEventType.SUBMITTED)
         job.save()
+        JobTrigger.objects.create(tenant=request.user, job=job, triggered_at=timezone.now())
         from .tasks import proc
 
         transaction.on_commit(lambda: proc.delay(str(job.id)))
@@ -227,12 +236,14 @@ class JobViewSet(viewsets.GenericViewSet):
         job.attempts = 0
         job.failure_reason = None
         job.next_retry_at = None
+        job.next_run_at = None
         job.locked_by = None
         job.lease_until = None
         job.output_result = {}
         job.last_ran_at = timezone.now()
         job.add_event(JobEventType.SUBMITTED, {"retried": True, "fromStatus": previous_status})
         job.save()
+        JobTrigger.objects.create(tenant=request.user, job=job, triggered_at=timezone.now())
         from .tasks import proc
 
         transaction.on_commit(lambda: proc.delay(str(job.id)))
@@ -251,6 +262,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.attempts = 0
         job.failure_reason = None
         job.next_retry_at = None
+        job.next_run_at = None
         job.locked_by = None
         job.lease_until = None
         job.last_ran_at = timezone.now()
@@ -266,10 +278,13 @@ class JobViewSet(viewsets.GenericViewSet):
         qs = self.get_queryset()
         now = timezone.now()
         one_minute_ago = now - timedelta(minutes=1)
-        jobs_per_min = qs.filter(last_ran_at__gte=one_minute_ago).count()
+        jobs_per_min = JobTrigger.objects.filter(
+            tenant=request.user, triggered_at__gte=one_minute_ago
+        ).count()
         concurrent_jobs = qs.filter(status=JobStatus.RUNNING).count()
         data = {
             "pending": qs.filter(status=JobStatus.PENDING).count(),
+            "throttled": qs.filter(status=JobStatus.THROTTLED).count(),
             "running": qs.filter(status=JobStatus.RUNNING).count(),
             "done": qs.filter(status=JobStatus.DONE).count(),
             "failed": qs.filter(status=JobStatus.FAILED).count(),
@@ -300,22 +315,26 @@ class JobViewSet(viewsets.GenericViewSet):
                 detail=f"Concurrent job limit reached ({concurrent_limit}). Try again shortly.",
             )
 
+        now = timezone.now()
+        # Pick jobs where status in (PENDING, THROTTLED) and (next_run_at is null or next_run_at <= now)
         job = (
-            Job.objects.filter(tenant=request.user, status=JobStatus.PENDING)
+            Job.objects.filter(tenant=request.user)
+            .filter(status__in=(JobStatus.PENDING, JobStatus.THROTTLED))
+            .filter(Q(next_run_at__isnull=True) | Q(next_run_at__lte=now))
             .order_by("created_at")
             .first()
         )
         if not job:
-            return api_response({"message": "No pending jobs available."})
+            return api_response({"message": "No pending or throttled jobs available."})
 
         job.status = JobStatus.RUNNING
         job.stage = JobStage.PROCESSING
         job.progress = max(job.progress, 5)
         job.processed_rows = max(job.processed_rows, int(job.total_rows * 0.05))
-        job.attempts = max(job.attempts, 1)
         job.locked_by = worker_id
         job.last_ran_at = timezone.now()
         job.lease_until = timezone.now() + timedelta(seconds=lease_seconds)
+        job.next_run_at = None
         job.add_event(JobEventType.LEASED, {"worker": worker_id})
         job.save()
         return api_response(JobSerializer(job).data)
@@ -363,6 +382,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.failure_reason = data["failure_reason"]
         job.locked_by = None
         job.lease_until = None
+        job.next_run_at = None
 
         if job.attempts >= job.max_attempts:
             job.status = JobStatus.DLQ

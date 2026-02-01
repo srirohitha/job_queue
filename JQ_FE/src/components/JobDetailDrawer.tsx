@@ -25,6 +25,7 @@ interface JobDetailDrawerProps {
 
 const statusColors = {
   PENDING: 'bg-gray-100 text-gray-700 border-gray-300',
+  THROTTLED: 'bg-amber-100 text-amber-700 border-amber-300',
   RUNNING: 'bg-blue-100 text-blue-700 border-blue-300',
   DONE: 'bg-green-100 text-green-700 border-green-300',
   FAILED: 'bg-red-100 text-red-700 border-red-300',
@@ -43,6 +44,7 @@ const eventColors = {
   LEASED: 'bg-indigo-500',
   PROGRESS_UPDATED: 'bg-cyan-500',
   RETRY_SCHEDULED: 'bg-yellow-500',
+  THROTTLED: 'bg-amber-500',
   FAILED: 'bg-red-500',
   MOVED_TO_DLQ: 'bg-purple-500',
   DONE: 'bg-green-500',
@@ -213,13 +215,73 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
           </Card>
 
           {/* Tabs */}
-          <Tabs defaultValue="overview" className="w-full">
-            <TabsList className="grid w-full grid-cols-4">
+          <Tabs defaultValue="details" className="w-full">
+            <TabsList className="grid w-full grid-cols-5">
+              <TabsTrigger value="details">Details</TabsTrigger>
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="input">Input</TabsTrigger>
               <TabsTrigger value="output">Output</TabsTrigger>
               <TabsTrigger value="events">Events</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="details" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Description</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  {job.status === 'PENDING' && (
+                    <p className="text-gray-700">
+                      This job is queued and waiting to be processed. It will be picked up by a worker when one is available.
+                    </p>
+                  )}
+                  {job.status === 'THROTTLED' && (
+                    <p className="text-gray-700">
+                      This job is throttled due to concurrent job limit. It will be retried automatically when a slot is free (next_run_at). Attempts are not incremented for throttling.
+                    </p>
+                  )}
+                  {job.status === 'RUNNING' && (
+                    <p className="text-gray-700">
+                      This job is currently being processed. Progress is updated as rows are handled. Attempts shown are only from automatic retries, not manual retriggers.
+                    </p>
+                  )}
+                  {job.status === 'DONE' && (
+                    <p className="text-gray-700">
+                      This job completed successfully. You can retry it to run again; attempts will reset to 0 on manual retry.
+                    </p>
+                  )}
+                  {(job.status === 'FAILED' || job.status === 'DLQ') && (
+                    <div className="space-y-3">
+                      {(() => {
+                        const reason = job.failureReason || 'Unknown reason';
+                        const isRateLimited = /rate limit|concurrent.*limit|jobs per minute|rate limited/i.test(reason);
+                        return (
+                          <>
+                            {isRateLimited && (
+                              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                                <p className="text-amber-800 font-medium text-xs mb-1">Rate limiting</p>
+                                <p className="text-amber-900 text-sm">
+                                  This job failed due to rate limiting. Attempts are not consumed for rate limits; you can retry or replay when capacity is available.
+                                </p>
+                              </div>
+                            )}
+                            <div>
+                              <p className="text-gray-600 text-xs mb-1">Failure reason</p>
+                              <p className="text-gray-900">{reason}</p>
+                            </div>
+                            {job.status === 'DLQ' && (
+                              <p className="text-gray-600 text-xs">
+                                This job was moved to the Dead Letter Queue after exhausting automatic retries. Use Replay to resubmit; attempts will reset to 0.
+                              </p>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
 
             <TabsContent value="overview" className="space-y-4">
               <Card>

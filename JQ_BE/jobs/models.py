@@ -7,6 +7,7 @@ from django.utils import timezone
 
 class JobStatus(models.TextChoices):
     PENDING = "PENDING", "Pending"
+    THROTTLED = "THROTTLED", "Throttled"
     RUNNING = "RUNNING", "Running"
     DONE = "DONE", "Done"
     FAILED = "FAILED", "Failed"
@@ -25,6 +26,7 @@ class JobEventType(models.TextChoices):
     LEASED = "LEASED", "Leased"
     PROGRESS_UPDATED = "PROGRESS_UPDATED", "Progress Updated"
     RETRY_SCHEDULED = "RETRY_SCHEDULED", "Retry Scheduled"
+    THROTTLED = "THROTTLED", "Throttled"
     FAILED = "FAILED", "Failed"
     MOVED_TO_DLQ = "MOVED_TO_DLQ", "Moved to DLQ"
     DONE = "DONE", "Done"
@@ -50,6 +52,8 @@ class Job(models.Model):
     locked_by = models.CharField(max_length=128, null=True, blank=True)
     lease_until = models.DateTimeField(null=True, blank=True)
     next_retry_at = models.DateTimeField(null=True, blank=True)
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    throttle_count = models.PositiveSmallIntegerField(default=0)
     failure_reason = models.TextField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=64, null=True, blank=True)
     input_payload = models.JSONField(default=dict, blank=True)
@@ -76,3 +80,19 @@ class Job(models.Model):
 
     def __str__(self) -> str:
         return f"{self.label} ({self.id})"
+
+
+class JobTrigger(models.Model):
+    """One row per job run/trigger (create, retry, replay). Used for jobs-per-minute count."""
+    job = models.ForeignKey(
+        Job, on_delete=models.CASCADE, related_name="triggers", null=True, blank=True
+    )
+    tenant = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="job_triggers"
+    )
+    triggered_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "triggered_at"], name="jobs_jt_tenant_trigger_idx"),
+        ]

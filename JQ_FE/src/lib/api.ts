@@ -35,6 +35,8 @@ interface ApiJob {
   locked_by?: string;
   lease_until?: string;
   next_retry_at?: string;
+  next_run_at?: string | null;
+  throttle_count?: number;
   failure_reason?: string;
   input_payload?: any;
   output_result?: any;
@@ -91,6 +93,8 @@ const mapJob = (job: ApiJob): Job => ({
   lockedBy: job.locked_by,
   leaseUntil: job.lease_until,
   nextRetryAt: job.next_retry_at,
+  nextRunAt: job.next_run_at,
+  throttleCount: job.throttle_count ?? 0,
   failureReason: job.failure_reason,
   inputPayload: job.input_payload,
   outputResult: job.output_result,

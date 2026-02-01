@@ -22,6 +22,8 @@ class JobSerializer(serializers.ModelSerializer):
             "locked_by",
             "lease_until",
             "next_retry_at",
+            "next_run_at",
+            "throttle_count",
             "failure_reason",
             "input_payload",
             "output_result",

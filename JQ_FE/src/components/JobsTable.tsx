@@ -31,6 +31,7 @@ interface JobsTableProps {
 
 const statusColors = {
   PENDING: 'bg-gray-100 text-gray-700 border-gray-300',
+  THROTTLED: 'bg-amber-100 text-amber-700 border-amber-300',
   RUNNING: 'bg-blue-100 text-blue-700 border-blue-300',
   DONE: 'bg-green-100 text-green-700 border-green-300',
   FAILED: 'bg-red-100 text-red-700 border-red-300',
@@ -221,6 +222,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                 <TabsList>
                   <TabsTrigger value="ALL">All</TabsTrigger>
                   <TabsTrigger value="PENDING">Pending</TabsTrigger>
+                  <TabsTrigger value="THROTTLED">Throttled</TabsTrigger>
                   <TabsTrigger value="RUNNING">Running</TabsTrigger>
                   <TabsTrigger value="DONE">Done</TabsTrigger>
                   <TabsTrigger value="FAILED">Failed</TabsTrigger>

@@ -1,6 +1,6 @@
-export type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'DLQ';
+export type JobStatus = 'PENDING' | 'THROTTLED' | 'RUNNING' | 'DONE' | 'FAILED' | 'DLQ';
 export type JobStage = 'VALIDATING' | 'PROCESSING' | 'FINALIZING' | 'DONE';
-export type EventType = 'SUBMITTED' | 'LEASED' | 'PROGRESS_UPDATED' | 'RETRY_SCHEDULED' | 'FAILED' | 'MOVED_TO_DLQ' | 'DONE';
+export type EventType = 'SUBMITTED' | 'LEASED' | 'PROGRESS_UPDATED' | 'RETRY_SCHEDULED' | 'THROTTLED' | 'FAILED' | 'MOVED_TO_DLQ' | 'DONE';
 
 export interface Job {
   id: string;
@@ -18,6 +18,8 @@ export interface Job {
   lockedBy?: string;
   leaseUntil?: string;
   nextRetryAt?: string;
+  nextRunAt?: string | null;
+  throttleCount?: number;
   failureReason?: string;
   inputPayload?: any;
   outputResult?: {
@@ -46,6 +48,7 @@ export interface JobEvent {
 
 export interface DashboardStats {
   pending: number;
+  throttled: number;
   running: number;
   done: number;
   failed: number;
