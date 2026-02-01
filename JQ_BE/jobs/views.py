@@ -332,6 +332,11 @@ class JobViewSet(viewsets.GenericViewSet):
             _advance_job(job)
         return api_response(JobSerializer(job).data)
 
+    def destroy(self, request, pk=None):
+        job = self.get_object()
+        job.delete()
+        return api_response({"id": str(pk)})
+
     @transaction.atomic
     def create(self, request):
         serializer = JobCreateSerializer(data=request.data)

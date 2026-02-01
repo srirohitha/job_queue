@@ -152,6 +152,14 @@ export const fetchStats = async (token: string) => {
   return parseResponse<DashboardStats>(response);
 };
 
+export const deleteJob = async (token: string, jobId: string) => {
+  const response = await fetch(`${API_BASE_URL}/jobs/${jobId}/`, {
+    method: 'DELETE',
+    headers: buildHeaders(token),
+  });
+  return parseResponse<{ id: string }>(response);
+};
+
 export const createJob = async (token: string, input: CreateJobInput) => {
   if (input.inputMode === 'csv') {
     if (!input.csvFile) {

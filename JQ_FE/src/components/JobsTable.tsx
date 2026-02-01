@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Copy, ExternalLink, RotateCw, Play, Search, RefreshCw, Calendar } from 'lucide-react';
+import { Copy, ExternalLink, RotateCw, Play, Search, RefreshCw, Calendar, Trash2 } from 'lucide-react';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -45,7 +45,7 @@ const stageColors = {
 };
 
 export function JobsTable({ jobs, limit }: JobsTableProps) {
-  const { retryJob, replayJob, refreshJobs } = useJobs();
+  const { retryJob, replayJob, deleteJob, refreshJobs } = useJobs();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | JobStatus>('ALL');
   const [timeRange, setTimeRange] = useState('all');
@@ -75,6 +75,17 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
     const updated = await replayJob(job.id);
     if (updated) {
       toast.success(`Job "${job.label}" replayed from DLQ`);
+    }
+  };
+
+  const handleDelete = async (job: Job) => {
+    const confirmed = window.confirm(`Delete job "${job.label}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+    const removed = await deleteJob(job.id);
+    if (removed) {
+      toast.success(`Job "${job.label}" deleted`);
     }
   };
 
@@ -204,8 +215,8 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                     <TableHead className="w-[200px]">Progress</TableHead>
                     <TableHead>Attempts</TableHead>
                   <TableHead>Created</TableHead>
-                  <TableHead className="text-center">Details</TableHead>
                   <TableHead className="text-center">Action</TableHead>
+                  <TableHead className="text-center">Details</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -257,19 +268,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                         {formatDate(job.createdAt)}
                       </TableCell>
                       <TableCell className="text-center">
-                        <div className="flex items-center justify-center">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSelectedJob(job)}
-                          >
-                            <ExternalLink className="h-4 w-4 mr-1" />
-                            Details
-                          </Button>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <div className="flex items-center justify-center">
+                        <div className="flex items-center justify-center gap-2">
                           {(job.status === 'FAILED' || job.status === 'DONE') && (
                             <Button
                               variant="outline"
@@ -290,11 +289,27 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                               Replay
                             </Button>
                           )}
-                          {job.status !== 'FAILED' &&
-                            job.status !== 'DONE' &&
-                            job.status !== 'DLQ' && (
-                              <span className="text-xs text-gray-400">—</span>
-                            )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDelete(job)}
+                            title="Delete job"
+                            className="text-red-600 hover:text-red-700"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSelectedJob(job)}
+                          >
+                            <ExternalLink className="h-4 w-4 mr-1" />
+                            Details
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>

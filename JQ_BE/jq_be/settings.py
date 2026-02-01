@@ -101,8 +101,8 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-JOBS_PER_MIN_LIMIT = int(os.getenv("JOBS_PER_MIN_LIMIT", "8"))
-CONCURRENT_JOBS_LIMIT = int(os.getenv("CONCURRENT_JOBS_LIMIT", "5"))
+JOBS_PER_MIN_LIMIT = int(os.getenv("JOBS_PER_MIN_LIMIT", "4"))
+CONCURRENT_JOBS_LIMIT = int(os.getenv("CONCURRENT_JOBS_LIMIT", "2"))
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
