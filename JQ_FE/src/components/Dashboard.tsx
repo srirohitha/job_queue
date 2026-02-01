@@ -21,9 +21,9 @@ export function Dashboard() {
     failed: 0,
     dlq: 0,
     jobsPerMin: 0,
-    jobsPerMinLimit: 8,
+    jobsPerMinLimit: 4,
     concurrentJobs: 0,
-    concurrentJobsLimit: 5,
+    concurrentJobsLimit: 2,
   });
 
   const refreshStats = useCallback(async () => {
@@ -35,9 +35,9 @@ export function Dashboard() {
         failed: 0,
         dlq: 0,
         jobsPerMin: 0,
-        jobsPerMinLimit: 8,
+        jobsPerMinLimit: 4,
         concurrentJobs: 0,
-        concurrentJobsLimit: 5,
+        concurrentJobsLimit: 2,
       });
       return;
     }

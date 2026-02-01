@@ -12,6 +12,20 @@
 
 The API will be available at `http://localhost:8000/api`.
 
+## Background Processing (Celery + Redis)
+
+This backend uses Celery for job processing and Redis as the broker.
+
+1. Start Redis (default `redis://localhost:6379/0`).
+2. Start the Celery worker:
+   `celery -A jq_be worker -l info`
+
+You can override defaults with:
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
+- `JOBS_PER_MIN_LIMIT`
+- `CONCURRENT_JOBS_LIMIT`
+
 ## Auth
 
 - Register: `POST /api/auth/register/`

@@ -1,7 +1,5 @@
 import csv
 import io
-import os
-import random
 from datetime import timedelta
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -15,6 +13,7 @@ from rest_framework.decorators import action
 from rest_framework.views import APIView
 
 from .models import Job, JobEventType, JobStage, JobStatus
+from .processing import build_output_result
 from .responses import api_response
 from .serializers import (
     JobCreateSerializer,
@@ -26,9 +25,6 @@ from .serializers import (
 )
 
 User = get_user_model()
-
-AUTO_ADVANCE = os.getenv("JOB_AUTO_ADVANCE", "true").lower() == "true"
-AUTO_ADVANCE_DELAY_SECONDS = int(os.getenv("JOB_AUTO_ADVANCE_DELAY_SECONDS", "8"))
 
 
 def _parse_config(value):
@@ -49,203 +45,6 @@ def _parse_csv(file_obj):
     reader = csv.DictReader(io.StringIO(decoded))
     rows = list(reader)
     return rows
-
-
-def _normalize_list(value):
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    return []
-
-
-def _extract_config(payload):
-    config = payload.get("config") if isinstance(payload, dict) else {}
-    config = config if isinstance(config, dict) else {}
-    required_fields = _normalize_list(
-        config.get("requiredFields") or config.get("required_fields")
-    )
-    dedupe_on = _normalize_list(config.get("dedupeOn") or config.get("dedupe_on"))
-    drop_nulls = config.get("dropNulls")
-    if drop_nulls is None:
-        drop_nulls = config.get("drop_nulls", False)
-    strict_mode = config.get("strictMode")
-    if strict_mode is None:
-        strict_mode = config.get("strict_mode", False)
-    numeric_field = config.get("numericField") or config.get("numeric_field")
-    return {
-        "required_fields": required_fields,
-        "dedupe_on": dedupe_on,
-        "drop_nulls": bool(drop_nulls),
-        "strict_mode": bool(strict_mode),
-        "numeric_field": numeric_field,
-    }
-
-
-def _is_null(value):
-    if value is None:
-        return True
-    if isinstance(value, str) and value.strip() == "":
-        return True
-    return False
-
-
-def _process_rows(rows, config):
-    required_fields = config.get("required_fields", [])
-    dedupe_on = config.get("dedupe_on", [])
-    drop_nulls = config.get("drop_nulls", False)
-    strict_mode = config.get("strict_mode", False)
-    required_set = set(required_fields)
-    seen = set()
-
-    valid_rows = []
-    invalid_rows = 0
-    nulls_dropped = 0
-    duplicates_removed = 0
-
-    for row in rows:
-        if not isinstance(row, dict):
-            invalid_rows += 1
-            continue
-
-        if required_fields:
-            missing_required = [field for field in required_fields if field not in row]
-            if missing_required:
-                invalid_rows += 1
-                continue
-            missing_values = [field for field in required_fields if _is_null(row.get(field))]
-            if missing_values:
-                if drop_nulls:
-                    nulls_dropped += 1
-                invalid_rows += 1
-                continue
-
-        if strict_mode and required_set:
-            extra_fields = set(row.keys()) - required_set
-            if extra_fields:
-                invalid_rows += 1
-                continue
-
-        if drop_nulls:
-            has_nulls = any(_is_null(value) for value in row.values())
-            if has_nulls:
-                nulls_dropped += 1
-                invalid_rows += 1
-                continue
-
-        if dedupe_on:
-            key = tuple(str(row.get(field, "")) for field in dedupe_on)
-            if key in seen:
-                duplicates_removed += 1
-                continue
-            seen.add(key)
-
-        valid_rows.append(row)
-
-    return {
-        "valid_rows": valid_rows,
-        "invalid_rows": invalid_rows,
-        "duplicates_removed": duplicates_removed,
-        "nulls_dropped": nulls_dropped,
-    }
-
-
-def _compute_numeric_stats(rows, numeric_field):
-    values = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        value = row.get(numeric_field)
-        if isinstance(value, (int, float)):
-            values.append(value)
-        else:
-            try:
-                parsed = float(value)
-            except (TypeError, ValueError):
-                continue
-            values.append(parsed)
-    if not values:
-        return None
-    total = sum(values)
-    return {
-        "field": numeric_field,
-        "sum": total,
-        "avg": total / len(values),
-        "min": min(values),
-        "max": max(values),
-    }
-
-
-def _build_output_result(job):
-    payload = job.input_payload or {}
-    rows = payload.get("rows") if isinstance(payload, dict) else []
-    rows = rows if isinstance(rows, list) else []
-    config = _extract_config(payload)
-    total_processed = len(rows)
-    processed = _process_rows(rows, config)
-    numeric_field = config.get("numeric_field")
-    numeric_stats = (
-        _compute_numeric_stats(processed["valid_rows"], numeric_field)
-        if numeric_field
-        else None
-    )
-    output = {
-        "totalProcessed": total_processed,
-        "totalValid": len(processed["valid_rows"]),
-        "totalInvalid": processed["invalid_rows"],
-        "duplicatesRemoved": processed["duplicates_removed"],
-        "nullsDropped": processed["nulls_dropped"],
-    }
-    if numeric_stats:
-        output["numericStats"] = numeric_stats
-    if processed["valid_rows"]:
-        output["outputData"] = processed["valid_rows"][:50]
-    return output
-
-
-def _advance_job(job):
-    now = timezone.now()
-    updated = False
-
-    if job.status == JobStatus.PENDING:
-        if now - job.created_at >= timedelta(seconds=AUTO_ADVANCE_DELAY_SECONDS):
-            job.status = JobStatus.RUNNING
-            job.stage = JobStage.PROCESSING
-            job.progress = max(job.progress, 5)
-            job.processed_rows = max(job.processed_rows, int(job.total_rows * 0.05))
-            job.attempts = max(job.attempts, 1)
-            job.locked_by = job.locked_by or f"worker-{job.tenant_id}"
-            job.lease_until = now + timedelta(seconds=120)
-            job.add_event(JobEventType.LEASED, {"worker": job.locked_by})
-            job.add_event(JobEventType.PROGRESS_UPDATED, {"progress": job.progress})
-            updated = True
-    elif job.status == JobStatus.RUNNING:
-        increment = random.randint(5, 12)
-        new_progress = min(job.progress + increment, 100)
-        job.progress = new_progress
-        job.processed_rows = int(job.total_rows * (new_progress / 100)) if job.total_rows else 0
-        if new_progress >= 100:
-            job.status = JobStatus.DONE
-            job.stage = JobStage.DONE
-            job.progress = 100
-            job.processed_rows = job.total_rows
-            job.locked_by = None
-            job.lease_until = None
-            job.output_result = _build_output_result(job)
-            job.add_event(JobEventType.DONE)
-        else:
-            if new_progress > 75:
-                job.stage = JobStage.FINALIZING
-            elif job.stage == JobStage.VALIDATING:
-                job.stage = JobStage.PROCESSING
-            job.add_event(JobEventType.PROGRESS_UPDATED, {"progress": job.progress})
-        updated = True
-
-    if updated:
-        job.save()
-    return updated
 
 
 class AuthRegisterView(APIView):
@@ -317,9 +116,6 @@ class JobViewSet(viewsets.GenericViewSet):
 
     def list(self, request):
         queryset = list(self.filter_queryset(self.get_queryset()))
-        if AUTO_ADVANCE:
-            for job in queryset:
-                _advance_job(job)
         page = self.paginate_queryset(queryset)
         serializer = JobSerializer(page if page is not None else queryset, many=True)
         if page is not None:
@@ -328,8 +124,6 @@ class JobViewSet(viewsets.GenericViewSet):
 
     def retrieve(self, request, pk=None):
         job = self.get_object()
-        if AUTO_ADVANCE:
-            _advance_job(job)
         return api_response(JobSerializer(job).data)
 
     def destroy(self, request, pk=None):
@@ -389,6 +183,9 @@ class JobViewSet(viewsets.GenericViewSet):
         )
         job.add_event(JobEventType.SUBMITTED)
         job.save()
+        from .tasks import proc
+
+        transaction.on_commit(lambda: proc.delay(str(job.id)))
         return api_response(JobSerializer(job).data, status_code=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
@@ -409,6 +206,9 @@ class JobViewSet(viewsets.GenericViewSet):
         job.output_result = {}
         job.add_event(JobEventType.SUBMITTED, {"retried": True, "fromStatus": previous_status})
         job.save()
+        from .tasks import proc
+
+        transaction.on_commit(lambda: proc.delay(str(job.id)))
         return api_response(JobSerializer(job).data)
 
     @action(detail=True, methods=["post"])
@@ -427,15 +227,14 @@ class JobViewSet(viewsets.GenericViewSet):
         job.lease_until = None
         job.add_event(JobEventType.SUBMITTED, {"replayed": True})
         job.save()
+        from .tasks import proc
+
+        transaction.on_commit(lambda: proc.delay(str(job.id)))
         return api_response(JobSerializer(job).data)
 
     @action(detail=False, methods=["get"])
     def stats(self, request):
         qs = self.get_queryset()
-        if AUTO_ADVANCE:
-            for job in list(qs):
-                _advance_job(job)
-            qs = self.get_queryset()
         now = timezone.now()
         one_minute_ago = now - timedelta(minutes=1)
         jobs_per_min = qs.filter(
@@ -449,9 +248,9 @@ class JobViewSet(viewsets.GenericViewSet):
             "failed": qs.filter(status=JobStatus.FAILED).count(),
             "dlq": qs.filter(status=JobStatus.DLQ).count(),
             "jobsPerMin": jobs_per_min,
-            "jobsPerMinLimit": getattr(settings, "JOBS_PER_MIN_LIMIT", 8),
+            "jobsPerMinLimit": getattr(settings, "JOBS_PER_MIN_LIMIT", 4),
             "concurrentJobs": concurrent_jobs,
-            "concurrentJobsLimit": getattr(settings, "CONCURRENT_JOBS_LIMIT", 5),
+            "concurrentJobsLimit": getattr(settings, "CONCURRENT_JOBS_LIMIT", 2),
         }
         return api_response(data)
 
@@ -509,7 +308,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.locked_by = None
         job.lease_until = None
         output_result = serializer.validated_data.get("output_result")
-        job.output_result = output_result or _build_output_result(job)
+        job.output_result = output_result or build_output_result(job.input_payload or {})
         job.add_event(JobEventType.DONE)
         job.save()
         return api_response(JobSerializer(job).data)
