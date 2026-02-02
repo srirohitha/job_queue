@@ -31,13 +31,16 @@ interface JobsTableProps {
   concurrentJobsLimit?: number;
 }
 
-const statusColors = {
+type DisplayStatus = JobStatus | 'RETRYING';
+
+const statusColors: Record<DisplayStatus, string> = {
   PENDING: 'bg-gray-100 text-gray-700 border-gray-300',
   THROTTLED: 'bg-amber-100 text-amber-700 border-amber-300',
   RUNNING: 'bg-blue-100 text-blue-700 border-blue-300',
   DONE: 'bg-green-100 text-green-700 border-green-300',
   FAILED: 'bg-red-100 text-red-700 border-red-300',
   DLQ: 'bg-purple-100 text-purple-700 border-purple-300',
+  RETRYING: 'bg-yellow-100 text-yellow-700 border-yellow-300',
 };
 
 const stageColors = {
@@ -59,7 +62,10 @@ export function JobsTable({ jobs, limit, concurrentJobs, concurrentJobsLimit }: 
   const runningCount = concurrentJobs ?? jobs.filter(job => job.status === 'RUNNING').length;
   const runningLimit = concurrentJobsLimit ?? 2;
 
-  const getDisplayStatus = (job: Job): JobStatus => {
+  const getDisplayStatus = (job: Job): DisplayStatus => {
+    if (job.status === 'FAILED' && job.nextRetryAt) {
+      return 'RETRYING';
+    }
     if (job.status === 'PENDING' && runningCount >= runningLimit) {
       return 'THROTTLED';
     }
@@ -156,7 +162,9 @@ export function JobsTable({ jobs, limit, concurrentJobs, concurrentJobsLimit }: 
     const matchesSearch = !query ||
       job.id.toLowerCase().includes(query) ||
       job.label.toLowerCase().includes(query);
-    const matchesStatus = statusFilter === 'ALL' || displayStatus === statusFilter;
+    const matchesStatus = statusFilter === 'ALL' ||
+      displayStatus === statusFilter ||
+      (statusFilter === 'FAILED' && displayStatus === 'RETRYING');
     const matchesRange = matchesTimeRange(job.createdAt);
     return matchesSearch && matchesStatus && matchesRange;
   });

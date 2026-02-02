@@ -1,11 +1,12 @@
 import csv
 import io
+import logging
 from datetime import timedelta
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import exceptions, permissions, status, viewsets
@@ -27,6 +28,7 @@ from .serializers import (
 )
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 def _enforce_jobs_per_min_limit(user) -> None:
     """Enforce jobs-per-minute: count distinct triggers in the last minute (same job run twice = 2)."""
@@ -260,6 +262,15 @@ class JobViewSet(viewsets.GenericViewSet):
 
         if job.status == JobStatus.PENDING:
             transaction.on_commit(lambda: proc.delay(str(job.id)))
+        logger.info(
+            "job submitted id=%s status=%s rows=%s input_mode=%s user=%s next_run_at=%s",
+            job.id,
+            job.status,
+            total_rows,
+            input_mode,
+            request.user.id,
+            job.next_run_at,
+        )
         return api_response(JobSerializer(job).data, status_code=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
@@ -287,6 +298,12 @@ class JobViewSet(viewsets.GenericViewSet):
         from .tasks import proc
 
         transaction.on_commit(lambda: proc.delay(str(job.id)))
+        logger.info(
+            "job retry requested id=%s user=%s from_status=%s",
+            job.id,
+            request.user.id,
+            previous_status,
+        )
         return api_response(JobSerializer(job).data)
 
     @action(detail=True, methods=["post"])
@@ -311,6 +328,11 @@ class JobViewSet(viewsets.GenericViewSet):
         from .tasks import proc
 
         transaction.on_commit(lambda: proc.delay(str(job.id)))
+        logger.info(
+            "job replay requested id=%s user=%s",
+            job.id,
+            request.user.id,
+        )
         return api_response(JobSerializer(job).data)
 
     @action(detail=False, methods=["get"])
@@ -322,13 +344,17 @@ class JobViewSet(viewsets.GenericViewSet):
             tenant=request.user, triggered_at__gte=one_minute_ago
         ).count()
         concurrent_jobs = qs.filter(status=JobStatus.RUNNING).count()
+        total_jobs = qs.count()
+        retry_total = qs.aggregate(total=Sum("attempts")).get("total") or 0
         data = {
+            "totalJobs": total_jobs,
             "pending": qs.filter(status=JobStatus.PENDING).count(),
             "throttled": qs.filter(status=JobStatus.THROTTLED).count(),
             "running": qs.filter(status=JobStatus.RUNNING).count(),
             "done": qs.filter(status=JobStatus.DONE).count(),
             "failed": qs.filter(status=JobStatus.FAILED).count(),
             "dlq": qs.filter(status=JobStatus.DLQ).count(),
+            "retries": retry_total,
             "jobsPerMin": jobs_per_min,
             "jobsPerMinLimit": getattr(settings, "JOBS_PER_MIN_LIMIT", 4),
             "concurrentJobs": concurrent_jobs,
@@ -409,6 +435,7 @@ class JobViewSet(viewsets.GenericViewSet):
         job.output_result = output_result or build_output_result(job.input_payload or {})
         job.add_event(JobEventType.DONE)
         job.save()
+        logger.info("job completed id=%s user=%s", job.id, request.user.id)
         return api_response(JobSerializer(job).data)
 
     @action(detail=True, methods=["post"])
@@ -448,6 +475,15 @@ class JobViewSet(viewsets.GenericViewSet):
             )
 
         job.save()
+        logger.info(
+            "job failed id=%s user=%s status=%s attempts=%s reason=%s next_retry_at=%s",
+            job.id,
+            request.user.id,
+            job.status,
+            job.attempts,
+            job.failure_reason,
+            job.next_retry_at,
+        )
         return api_response(JobSerializer(job).data)
 
     @action(detail=True, methods=["post"])
@@ -491,4 +527,13 @@ class JobViewSet(viewsets.GenericViewSet):
             )
 
         job.save()
+        logger.info(
+            "job failed manually id=%s user=%s status=%s attempts=%s reason=%s next_retry_at=%s",
+            job.id,
+            request.user.id,
+            job.status,
+            job.attempts,
+            job.failure_reason,
+            job.next_retry_at,
+        )
         return api_response(JobSerializer(job).data)

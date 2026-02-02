@@ -1,4 +1,4 @@
-import { Clock, PlayCircle, CheckCircle, XCircle, AlertTriangle, Gauge, Users } from 'lucide-react';
+import { Clock, PlayCircle, CheckCircle, XCircle, AlertTriangle, Gauge, Users, List, RotateCw } from 'lucide-react';
 import { SummaryCard } from './SummaryCard';
 import { useCallback, useEffect, useState } from 'react';
 import { JobSubmitPanel } from './JobSubmitPanel';
@@ -15,12 +15,14 @@ export function Dashboard() {
   const { token, isBootstrapping } = useAuth();
   const autoRefresh = true;
   const [stats, setStats] = useState<DashboardStats>({
+    totalJobs: 0,
     pending: 0,
     throttled: 0,
     running: 0,
     done: 0,
     failed: 0,
     dlq: 0,
+    retries: 0,
     jobsPerMin: 0,
     jobsPerMinLimit: 4,
     concurrentJobs: 0,
@@ -30,12 +32,14 @@ export function Dashboard() {
   const refreshStats = useCallback(async () => {
     if (!token) {
       setStats({
+        totalJobs: 0,
         pending: 0,
         throttled: 0,
         running: 0,
         done: 0,
         failed: 0,
         dlq: 0,
+        retries: 0,
         jobsPerMin: 0,
         jobsPerMinLimit: 4,
         concurrentJobs: 0,
@@ -111,7 +115,7 @@ export function Dashboard() {
           />
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <SummaryCard
             title="Jobs Per Minute"
             value={`${stats.jobsPerMin} / ${stats.jobsPerMinLimit}`}
@@ -125,6 +129,18 @@ export function Dashboard() {
             icon={Users}
             color="green"
             subtitle={`${Math.round((stats.concurrentJobs / Math.max(stats.concurrentJobsLimit, 1)) * 100)}% quota used`}
+          />
+          <SummaryCard
+            title="Total Jobs"
+            value={stats.totalJobs}
+            icon={List}
+            color="gray"
+          />
+          <SummaryCard
+            title="Retries"
+            value={stats.retries}
+            icon={RotateCw}
+            color="amber"
           />
         </div>
       </div>

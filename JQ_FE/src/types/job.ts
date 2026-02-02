@@ -47,12 +47,14 @@ export interface JobEvent {
 }
 
 export interface DashboardStats {
+  totalJobs: number;
   pending: number;
   throttled: number;
   running: number;
   done: number;
   failed: number;
   dlq: number;
+  retries: number;
   jobsPerMin: number;
   jobsPerMinLimit: number;
   concurrentJobs: number;

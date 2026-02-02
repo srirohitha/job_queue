@@ -34,6 +34,32 @@ You can override defaults with:
 - `JOB_PENDING_TIMEOUT_SECONDS`
 - `JOB_RETRY_SCAN_SECONDS`
 
+## Auto-scaling workers (design notes)
+
+We do not auto-scale workers in this repo, but this is how it would work with the current design:
+
+- **Scale driver**: monitor Redis queue depth for `jobs` + job latency (time since `SUBMITTED`).
+- **Decision**: if queue depth or latency crosses a threshold for N intervals, add workers; if both stay low for M minutes, scale down.
+- **Mechanics**: run workers in containers (e.g., Docker/K8s). Use a simple HPA rule on Redis list length or a custom metric (queued jobs count).
+- **Concurrency**: each worker can run multiple jobs if the pool supports it (threads/gevent). On Windows with `solo`, scale by adding more worker processes instead.
+- **Safety**: keep `CONCURRENT_JOBS_LIMIT` enforced in the DB to avoid stampede even if workers scale up quickly.
+
+Implementation outline (example):
+
+- **Export metrics**: expose queue depth and oldest job age (Redis list length + oldest `Job.created_at`).
+- **Autoscaler**: run a small service that polls those metrics and updates worker replicas.
+- **K8s approach**: use HPA with a custom metric (queued jobs) and set min/max replicas (e.g., 1–10).
+- **Non-K8s approach**: run a supervisor (systemd/supervisord) that starts/stops worker processes based on thresholds.
+- **Queues**: scale `jobs` workers aggressively; keep `reconcile` workers at a fixed small count.
+
+## Design trade-offs (short)
+
+- **Retry behavior**: retries start from the beginning (no checkpointing). Simpler and reliable, but redoes work on failures.
+- **SQLite locking**: good for local dev; concurrent workers can hit `database is locked`. Production should use Postgres.
+- **Progress updates**: CSV updates are batched to reduce DB load. Fewer updates means less granular progress.
+- **Throttle vs pending**: we mark new jobs as `THROTTLED` when capacity is full to make waiting explicit in the UI.
+- **Observability**: logs include job IDs and event summaries; metrics are lightweight (counts + retry totals) to avoid heavy queries.
+
 ## Auth
 
 - Register: `POST /api/auth/register/`

@@ -208,11 +208,14 @@ export const mockJobs: Job[] = [
 
 export const getDashboardStats = (jobs: Job[]): DashboardStats => {
   return {
+    totalJobs: jobs.length,
     pending: jobs.filter(j => j.status === 'PENDING').length,
+    throttled: jobs.filter(j => j.status === 'THROTTLED').length,
     running: jobs.filter(j => j.status === 'RUNNING').length,
     done: jobs.filter(j => j.status === 'DONE').length,
     failed: jobs.filter(j => j.status === 'FAILED').length,
     dlq: jobs.filter(j => j.status === 'DLQ').length,
+    retries: jobs.reduce((sum, job) => sum + (job.attempts ?? 0), 0),
     jobsPerMin: 12,
     jobsPerMinLimit: 60,
     concurrentJobs: jobs.filter(j => j.status === 'RUNNING').length,

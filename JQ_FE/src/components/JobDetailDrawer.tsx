@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Progress } from './ui/progress';
 import { Separator } from './ui/separator';
-import { Job } from '../types/job';
+import { Job, JobStatus } from '../types/job';
 import { toast } from 'sonner';
 import { cn } from './ui/utils';
 import { useJobs } from '../context/JobContext';
@@ -23,13 +23,16 @@ interface JobDetailDrawerProps {
   onClose: () => void;
 }
 
-const statusColors = {
+type DisplayStatus = JobStatus | 'RETRYING';
+
+const statusColors: Record<DisplayStatus, string> = {
   PENDING: 'bg-gray-100 text-gray-700 border-gray-300',
   THROTTLED: 'bg-amber-100 text-amber-700 border-amber-300',
   RUNNING: 'bg-blue-100 text-blue-700 border-blue-300',
   DONE: 'bg-green-100 text-green-700 border-green-300',
   FAILED: 'bg-red-100 text-red-700 border-red-300',
   DLQ: 'bg-purple-100 text-purple-700 border-purple-300',
+  RETRYING: 'bg-yellow-100 text-yellow-700 border-yellow-300',
 };
 
 const stageColors = {
@@ -53,6 +56,8 @@ const eventColors = {
 export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
   const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set());
   const { retryJob, replayJob, failJob } = useJobs();
+  const isRetrying = job.status === 'FAILED' && Boolean(job.nextRetryAt);
+  const displayStatus: DisplayStatus = isRetrying ? 'RETRYING' : job.status;
 
   const copyJobId = async () => {
     await navigator.clipboard.writeText(job.id);
@@ -146,8 +151,8 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-gray-600 mb-1">Status</p>
-                  <Badge variant="outline" className={cn('border', statusColors[job.status])}>
-                    {job.status}
+                  <Badge variant="outline" className={cn('border', statusColors[displayStatus])}>
+                    {displayStatus}
                   </Badge>
                 </div>
                 <div>
@@ -250,6 +255,11 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
                   {job.status === 'PENDING' && (
                     <p className="text-gray-700">
                       This job is queued and waiting to be processed. It will be picked up by a worker when one is available.
+                    </p>
+                  )}
+                  {isRetrying && (
+                    <p className="text-gray-700">
+                      This job failed and is scheduled for automatic retry. It will be re-queued when the retry timer elapses.
                     </p>
                   )}
                   {job.status === 'THROTTLED' && (

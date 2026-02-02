@@ -2,6 +2,7 @@
 Celery tasks for job processing. THROTTLED jobs do not increment attempts;
 reconcile re-enqueues THROTTLED jobs when next_run_at <= now.
 """
+import logging
 import random
 import time
 from datetime import timedelta
@@ -13,6 +14,8 @@ from django.utils import timezone
 
 from .models import Job, JobEventType, JobStage, JobStatus
 from .processing import build_output_result
+
+logger = logging.getLogger(__name__)
 
 
 def _lease_seconds() -> int:
@@ -166,6 +169,13 @@ def proc(job_id: str) -> dict:
         job.add_event(JobEventType.PROGRESS_UPDATED, {"progress": job.progress})
         payload = job.input_payload or {}
         _save_with_retry(job)
+        logger.info(
+            "proc start job=%s status=%s attempts=%s rows=%s",
+            job.id,
+            job.status,
+            job.attempts,
+            job.total_rows,
+        )
 
     try:
         if _should_delay_rows(payload):
@@ -229,6 +239,15 @@ def proc(job_id: str) -> dict:
             job.next_run_at = None
             job.add_event(JobEventType.DONE)
             _save_with_retry(job)
+        logger.info(
+            "proc done job=%s total=%s valid=%s invalid=%s duplicates=%s nulls=%s",
+            job_id,
+            output_result.get("totalProcessed"),
+            output_result.get("totalValid"),
+            output_result.get("totalInvalid"),
+            output_result.get("duplicatesRemoved"),
+            output_result.get("nullsDropped"),
+        )
         return {"status": JobStatus.DONE}
     except Exception as exc:
         retry_in = int(getattr(settings, "JOB_RETRY_DELAY_SECONDS", 5))
@@ -240,6 +259,13 @@ def proc(job_id: str) -> dict:
                 job.status = JobStatus.DLQ
                 job.add_event(JobEventType.MOVED_TO_DLQ, {"reason": job.failure_reason})
             _save_with_retry(job)
+        logger.exception(
+            "proc failed job=%s status=%s attempts=%s reason=%s",
+            job_id,
+            job.status,
+            job.attempts,
+            str(exc),
+        )
         raise
 
 
@@ -270,8 +296,20 @@ def reconcile() -> dict:
                     JobEventType.MOVED_TO_DLQ, {"reason": job.failure_reason}
                 )
                 pending_to_dlq += 1
+                logger.info(
+                    "reconcile: pending timeout -> DLQ job=%s attempts=%s",
+                    jid,
+                    job.attempts,
+                )
             _save_with_retry(job)
             pending_failed += 1
+            if job.status == JobStatus.FAILED:
+                logger.info(
+                    "reconcile: pending timeout -> FAILED job=%s attempts=%s next_retry_at=%s",
+                    jid,
+                    job.attempts,
+                    job.next_retry_at,
+                )
         except OperationalError:
             continue
 
@@ -292,6 +330,7 @@ def reconcile() -> dict:
             _save_with_retry(job, update_fields=["status", "next_run_at", "updated_at"])
             proc.delay(str(jid))
             requeued += 1
+            logger.info("reconcile: requeued throttled job=%s", jid)
         except OperationalError:
             continue
 
@@ -324,6 +363,11 @@ def reconcile() -> dict:
                     ],
                 )
                 failed_to_dlq += 1
+                logger.info(
+                    "reconcile: failed -> DLQ job=%s attempts=%s",
+                    jid,
+                    job.attempts,
+                )
                 continue
             job.status = JobStatus.PENDING
             job.stage = JobStage.VALIDATING
@@ -354,6 +398,11 @@ def reconcile() -> dict:
             )
             proc.delay(str(jid))
             failed_requeued += 1
+            logger.info(
+                "reconcile: requeued failed job=%s attempts=%s",
+                jid,
+                job.attempts,
+            )
         except OperationalError:
             continue
 
@@ -377,6 +426,12 @@ def reconcile() -> dict:
                 job.add_event(JobEventType.MOVED_TO_DLQ, {"reason": job.failure_reason})
             _save_with_retry(job)
             failed_count += 1
+            logger.info(
+                "reconcile: lease expired -> %s job=%s attempts=%s",
+                job.status,
+                jid,
+                job.attempts,
+            )
         except OperationalError:
             continue
 
