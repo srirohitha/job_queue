@@ -67,6 +67,14 @@ class Job(models.Model):
         indexes = [
             models.Index(fields=["tenant", "status"]),
             models.Index(fields=["created_at"]),
+            models.Index(fields=["tenant", "idempotency_key"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "idempotency_key"], 
+                condition=models.Q(idempotency_key__isnull=False),
+                name="unique_tenant_idempotency_key"
+            )
         ]
 
     def add_event(self, event_type: str, metadata: dict | None = None) -> None:

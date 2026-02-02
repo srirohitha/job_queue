@@ -1,4 +1,9 @@
+import random
+import re
+import time
 from typing import Any
+
+from django.conf import settings
 
 
 def _normalize_list(value: Any) -> list[str]:
@@ -31,6 +36,7 @@ def _extract_config(payload: Any) -> dict:
         "drop_nulls": bool(drop_nulls),
         "strict_mode": bool(strict_mode),
         "numeric_field": numeric_field,
+        "is_csv_processing": bool(config.get("is_csv_processing", False)),
     }
 
 
@@ -42,6 +48,53 @@ def _is_null(value: Any) -> bool:
     return False
 
 
+def _validate_email(email: str) -> bool:
+    """Validate email format using regex."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+
+def _validate_age(age: Any) -> bool:
+    """Validate age is between 0 and 100."""
+    try:
+        age_num = float(age)
+        return 0 < age_num < 100
+    except (ValueError, TypeError):
+        return False
+
+
+def _validate_name(name: str) -> bool:
+    """Validate name length is greater than 2 letters."""
+    if not isinstance(name, str):
+        return False
+    return len(name.strip()) > 2
+
+
+def _validate_row_data(row: dict) -> dict:
+    """Apply validation logic to row data."""
+    validation_errors = []
+    
+    # Email validation
+    if 'email' in row:
+        if not _validate_email(str(row['email'])):
+            validation_errors.append("Invalid email format")
+    
+    # Age validation
+    if 'age' in row:
+        if not _validate_age(row['age']):
+            validation_errors.append("Age must be between 0 and 100")
+    
+    # Name validation
+    if 'name' in row:
+        if not _validate_name(str(row['name'])):
+            validation_errors.append("Name must be greater than 2 letters")
+    
+    return {
+        'is_valid': len(validation_errors) == 0,
+        'errors': validation_errors
+    }
+
+
 def _process_rows(rows: list, config: dict) -> dict:
     required_fields = config.get("required_fields", [])
     dedupe_on = config.get("dedupe_on", [])
@@ -49,6 +102,17 @@ def _process_rows(rows: list, config: dict) -> dict:
     strict_mode = config.get("strict_mode", False)
     required_set = set(required_fields)
     seen = set()
+    
+    # Check if this is CSV data processing
+    is_csv_processing = config.get("is_csv_processing", False)
+    is_json_processing = not is_csv_processing  # JSON processing if not CSV
+    json_delay_min = float(
+        getattr(settings, "JOB_JSON_ROW_DELAY_MIN_SECONDS", 2)
+    )
+    json_delay_max = float(
+        getattr(settings, "JOB_JSON_ROW_DELAY_MAX_SECONDS", json_delay_min)
+    )
+    csv_row_delay = float(getattr(settings, "JOB_CSV_ROW_DELAY_SECONDS", 0.1))
 
     valid_rows = []
     invalid_rows = 0
@@ -56,7 +120,19 @@ def _process_rows(rows: list, config: dict) -> dict:
     duplicates_removed = 0
 
     for row in rows:
+        # Add sleep time before validating each row
+        if is_csv_processing:
+            time.sleep(csv_row_delay)
+        elif is_json_processing:
+            time.sleep(random.uniform(json_delay_min, json_delay_max))
+        
         if not isinstance(row, dict):
+            invalid_rows += 1
+            continue
+        
+        # Apply validation logic
+        validation_result = _validate_row_data(row)
+        if not validation_result['is_valid']:
             invalid_rows += 1
             continue
 
@@ -132,6 +208,7 @@ def build_output_result(payload: Any) -> dict:
     rows = payload.get("rows") if isinstance(payload, dict) else []
     rows = rows if isinstance(rows, list) else []
     config = _extract_config(payload)
+    
     total_processed = len(rows)
     processed = _process_rows(rows, config)
     numeric_field = config.get("numeric_field")

@@ -3,7 +3,7 @@ Celery tasks for job processing. THROTTLED jobs do not increment attempts;
 reconcile re-enqueues THROTTLED jobs when next_run_at <= now.
 """
 from django.conf import settings
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.utils import timezone
 from celery import shared_task
 from datetime import timedelta
@@ -31,8 +31,15 @@ def _mark_failed(job, reason: str, now, retry_in_seconds: int) -> None:
     job.add_event(JobEventType.FAILED, {"reason": reason, "attempt": job.attempts})
 
 
-@shared_task(name="jobs.proc")
-def proc(job_id: str) -> dict:
+@shared_task(
+    name="jobs.proc",
+    bind=True,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
+    max_retries=5,
+)
+def proc(self, job_id: str) -> dict:
     now = timezone.now()
     with transaction.atomic():
         job = Job.objects.select_for_update().get(id=job_id)
@@ -73,10 +80,10 @@ def proc(job_id: str) -> dict:
 
         job.status = JobStatus.RUNNING
         job.stage = JobStage.PROCESSING
-        job.progress = max(job.progress, 5)
+        job.progress = max(job.progress, 10)  # Start at 10% after lease
         job.processed_rows = max(
             job.processed_rows,
-            int(job.total_rows * 0.05) if job.total_rows else 0,
+            int(job.total_rows * 0.1) if job.total_rows else 0,
         )
         job.locked_by = "celery-worker"
         job.last_ran_at = now
@@ -88,7 +95,22 @@ def proc(job_id: str) -> dict:
         job.save()
 
     try:
+        # Update progress to show we're starting actual processing
+        with transaction.atomic():
+            job = Job.objects.select_for_update().get(id=job_id)
+            job.stage = JobStage.PROCESSING
+            job.progress = 20  # 20% after starting processing
+            job.save()
+        
         output_result = build_output_result(payload)
+        
+        # Update to finalizing stage
+        with transaction.atomic():
+            job = Job.objects.select_for_update().get(id=job_id)
+            job.stage = JobStage.FINALIZING
+            job.progress = 90  # 90% during finalization
+            job.save()
+        
         with transaction.atomic():
             job = Job.objects.select_for_update().get(id=job_id)
             job.status = JobStatus.DONE
@@ -102,6 +124,8 @@ def proc(job_id: str) -> dict:
             job.add_event(JobEventType.DONE)
             job.save()
         return {"status": JobStatus.DONE}
+    except OperationalError:
+        raise
     except Exception as exc:
         retry_in = int(getattr(settings, "JOB_RETRY_DELAY_SECONDS", 5))
         with transaction.atomic():

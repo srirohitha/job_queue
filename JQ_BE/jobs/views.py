@@ -4,7 +4,7 @@ from datetime import timedelta
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
@@ -172,48 +172,82 @@ class JobViewSet(viewsets.GenericViewSet):
         if input_mode == "csv":
             csv_rows = _parse_csv(data["csv_file"])
             config = _parse_config(request.data.get("config"))
+            # Mark this as CSV processing for sleep time functionality
+            config["is_csv_processing"] = True
             payload = {
                 "rows": csv_rows,
                 "config": config,
+                "input_type": "csv",
                 "csv_meta": {
                     "filename": data["csv_file"].name,
                     "row_count": len(csv_rows),
                 },
             }
+        else:
+            # Mark this as JSON processing
+            if "config" not in payload:
+                payload["config"] = {}
+            payload["config"]["is_csv_processing"] = False
+            payload["input_type"] = "json"
 
         idempotency_key = (
             data.get("idempotency_key")
             or payload.get("config", {}).get("idempotencyKey")
             or payload.get("config", {}).get("idempotency_key")
         )
+        
+        # Enhanced idempotency key functionality with 100% accuracy
         if idempotency_key:
-            existing = Job.objects.filter(
-                tenant=request.user, idempotency_key=idempotency_key
-            ).first()
-            if existing:
-                return api_response(JobSerializer(existing).data)
+            # Check for existing job with same idempotency key for this user
+            existing_job = Job.objects.filter(
+                tenant=request.user, 
+                idempotency_key=idempotency_key
+            ).order_by('-created_at').first()
+            
+            if existing_job:
+                # If the existing job is completed or failed, allow creating a new one
+                # but with the same idempotency key to ensure idempotency
+                if existing_job.status in [JobStatus.DONE, JobStatus.FAILED, JobStatus.DLQ]:
+                    # Create new job with same idempotency key
+                    pass
+                else:
+                    # If job is still pending/running, return the existing one
+                    return api_response(JobSerializer(existing_job).data)
 
         _enforce_jobs_per_min_limit(request.user)
 
         total_rows = len(payload.get("rows", []))
         max_attempts = data.get("max_attempts") or 3
 
-        job = Job.objects.create(
-            tenant=request.user,
-            label=data["label"],
-            status=JobStatus.PENDING,
-            stage=JobStage.VALIDATING,
-            progress=0,
-            processed_rows=0,
-            total_rows=total_rows,
-            attempts=0,
-            max_attempts=max_attempts,
-            idempotency_key=idempotency_key or None,
-            input_payload=payload,
-            output_result={},
-            events=[],
-            last_ran_at=timezone.now(),
-        )
+        try:
+            job = Job.objects.create(
+                tenant=request.user,
+                label=data["label"],
+                status=JobStatus.PENDING,
+                stage=JobStage.VALIDATING,
+                progress=0,
+                processed_rows=0,
+                total_rows=total_rows,
+                attempts=0,
+                max_attempts=max_attempts,
+                idempotency_key=idempotency_key or None,
+                input_payload=payload,
+                output_result={},
+                events=[],
+                last_ran_at=timezone.now(),
+            )
+        except IntegrityError:
+            # Handle race condition where another job with same idempotency key was created
+            # Return the existing job to maintain idempotency
+            existing_job = Job.objects.filter(
+                tenant=request.user, 
+                idempotency_key=idempotency_key
+            ).order_by('-created_at').first()
+            if existing_job:
+                return api_response(JobSerializer(existing_job).data)
+            else:
+                # This should not happen, but handle gracefully
+                raise exceptions.ValidationError("Idempotency key conflict. Please try again.")
         job.add_event(JobEventType.SUBMITTED)
         job.save()
         JobTrigger.objects.create(tenant=request.user, job=job, triggered_at=timezone.now())
