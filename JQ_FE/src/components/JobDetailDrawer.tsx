@@ -52,7 +52,7 @@ const eventColors = {
 
 export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
   const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set());
-  const { retryJob, replayJob } = useJobs();
+  const { retryJob, replayJob, failJob } = useJobs();
 
   const copyJobId = async () => {
     await navigator.clipboard.writeText(job.id);
@@ -95,6 +95,18 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
     const updated = await replayJob(job.id);
     if (updated) {
       toast.success('Job replayed from DLQ');
+      onClose();
+    }
+  };
+
+  const handleFail = async () => {
+    const confirmed = window.confirm('Fail this running job? It will stop processing and can be retried from the beginning.');
+    if (!confirmed) {
+      return;
+    }
+    const updated = await failJob(job.id, 'Manually failed while processing.');
+    if (updated) {
+      toast.success('Job failed');
       onClose();
     }
   };
@@ -198,6 +210,11 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
 
               {/* Action Buttons */}
               <div className="flex gap-2 pt-2">
+                {job.status === 'RUNNING' && (
+                  <Button variant="outline" onClick={handleFail} className="flex-1 text-red-600 border-red-200 hover:text-red-700">
+                    Fail Job
+                  </Button>
+                )}
                 {(job.status === 'FAILED' || job.status === 'DONE') && (
                   <Button onClick={handleRetry} className="flex-1">
                     <RotateCw className="h-4 w-4 mr-2" />
@@ -216,7 +233,7 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
 
           {/* Tabs */}
           <Tabs defaultValue="details" className="w-full">
-            <TabsList className="grid w-full grid-cols-5">
+            <TabsList className="w-full justify-start gap-2 overflow-x-auto flex-nowrap">
               <TabsTrigger value="details">Details</TabsTrigger>
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="input">Input</TabsTrigger>
@@ -279,6 +296,13 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
                       })()}
                     </div>
                   )}
+
+                  {job.status === 'THROTTLED' && job.nextRunAt && (
+                    <div className="text-xs text-gray-600">
+                      Next run at: <span className="font-medium">{formatTimestamp(job.nextRunAt)}</span>
+                    </div>
+                  )}
+
                 </CardContent>
               </Card>
             </TabsContent>
@@ -339,7 +363,71 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
               </Card>
             </TabsContent>
 
-            <TabsContent value="input">
+            <TabsContent value="input" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Input Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {job.inputPayload ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div>
+                          <p className="text-gray-600">Rows</p>
+                          <p className="font-medium">
+                            {(job.inputPayload.rows?.length ?? job.totalRows).toLocaleString()}
+                          </p>
+                        </div>
+                        {job.inputPayload.csv_meta && (
+                          <div>
+                            <p className="text-gray-600">CSV file</p>
+                            <p className="font-medium">{job.inputPayload.csv_meta.filename}</p>
+                          </div>
+                        )}
+                        {job.inputPayload.csv_meta && (
+                          <div>
+                            <p className="text-gray-600">CSV rows</p>
+                            <p className="font-medium">
+                              {(job.inputPayload.csv_meta.row_count ?? 0).toLocaleString()}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                      {job.inputPayload.config && (
+                        <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                          <div>
+                            <p className="text-gray-600">Required fields</p>
+                            <p className="font-medium">
+                              {(job.inputPayload.config.requiredFields ?? []).join(', ') || '—'}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Dedupe on</p>
+                            <p className="font-medium">
+                              {(job.inputPayload.config.dedupeOn ?? []).join(', ') || '—'}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Numeric field</p>
+                            <p className="font-medium">
+                              {job.inputPayload.config.numericField || '—'}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Strict / Drop nulls</p>
+                            <p className="font-medium">
+                              {job.inputPayload.config.strictMode ? 'Strict' : 'Relaxed'} /{' '}
+                              {job.inputPayload.config.dropNulls ? 'Drop nulls' : 'Keep nulls'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500">No input payload available.</p>
+                  )}
+                </CardContent>
+              </Card>
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Input Payload</CardTitle>
@@ -353,6 +441,51 @@ export function JobDetailDrawer({ job, open, onClose }: JobDetailDrawerProps) {
             </TabsContent>
 
             <TabsContent value="output" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Output Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {job.outputResult && Object.keys(job.outputResult).length > 0 ? (
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <p className="text-gray-600">Total processed</p>
+                        <p className="font-medium">
+                          {(job.outputResult.totalProcessed ?? 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-600">Valid records</p>
+                        <p className="font-medium">
+                          {(job.outputResult.totalValid ?? 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-600">Invalid records</p>
+                        <p className="font-medium">
+                          {(job.outputResult.totalInvalid ?? 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-600">Duplicates removed</p>
+                        <p className="font-medium">
+                          {(job.outputResult.duplicatesRemoved ?? 0).toLocaleString()}
+                        </p>
+                      </div>
+                      {(job.outputResult.nullsDropped ?? 0) > 0 && (
+                        <div>
+                          <p className="text-gray-600">Nulls dropped</p>
+                          <p className="font-medium">
+                            {(job.outputResult.nullsDropped ?? 0).toLocaleString()}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">No output available yet.</p>
+                  )}
+                </CardContent>
+              </Card>
               {job.outputResult && Object.keys(job.outputResult).length > 0 ? (
                 <>
                   <Card>

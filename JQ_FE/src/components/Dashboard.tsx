@@ -135,7 +135,12 @@ export function Dashboard() {
       {/* Recent Jobs */}
       <div>
         <h2 className="text-2xl font-semibold mb-4">Recent Jobs</h2>
-        <JobsTable jobs={jobs} limit={5} />
+        <JobsTable
+          jobs={jobs}
+          limit={5}
+          concurrentJobs={stats.concurrentJobs}
+          concurrentJobsLimit={stats.concurrentJobsLimit}
+        />
       </div>
     </div>
   );

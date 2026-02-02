@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
-import { CreateJobInput, createJob, deleteJob, fetchJobs, replayJob, retryJob } from '../lib/api';
+import { CreateJobInput, createJob, deleteJob, failJob, fetchJobs, replayJob, retryJob } from '../lib/api';
 import { Job } from '../types/job';
 import { useAuth } from './AuthContext';
 
@@ -12,6 +12,7 @@ interface JobContextType {
   submitJob: (input: CreateJobInput) => Promise<Job | null>;
   retryJob: (jobId: string) => Promise<Job | null>;
   replayJob: (jobId: string) => Promise<Job | null>;
+  failJob: (jobId: string, reason?: string) => Promise<Job | null>;
   deleteJob: (jobId: string) => Promise<boolean>;
 }
 
@@ -110,6 +111,24 @@ export function JobProvider({ children }: { children: ReactNode }) {
     [token]
   );
 
+  const handleFailJob = useCallback(
+    async (jobId: string, reason?: string) => {
+      if (!token) {
+        toast.error('Please sign in to fail jobs');
+        return null;
+      }
+      try {
+        const updated = await failJob(token, jobId, reason);
+        setJobs(prev => prev.map(job => (job.id === updated.id ? updated : job)));
+        return updated;
+      } catch (error: any) {
+        toast.error(error?.message || 'Failed to fail job');
+        return null;
+      }
+    },
+    [token]
+  );
+
   const handleDeleteJob = useCallback(
     async (jobId: string) => {
       if (!token) {
@@ -154,6 +173,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
         submitJob,
         retryJob: handleRetryJob,
         replayJob: handleReplayJob,
+        failJob: handleFailJob,
         deleteJob: handleDeleteJob,
       }}
     >

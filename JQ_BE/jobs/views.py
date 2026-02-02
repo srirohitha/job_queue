@@ -4,7 +4,7 @@ from datetime import timedelta
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction, IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
@@ -17,6 +17,7 @@ from .models import Job, JobEventType, JobStage, JobStatus, JobTrigger
 from .processing import build_output_result
 from .responses import api_response
 from .serializers import (
+    JobActionSerializer,
     JobCreateSerializer,
     JobSerializer,
     WorkerCompleteSerializer,
@@ -49,6 +50,11 @@ def _enforce_jobs_per_min_limit(user) -> None:
         wait=wait,
         detail=f"Rate limit exceeded: max {limit} job triggers per minute. Try again in ~{wait}s.",
     )
+
+
+def _throttle_backoff_seconds(throttle_count: int) -> int:
+    base = int(getattr(settings, "JOB_THROTTLE_BACKOFF_SECONDS", 15))
+    return min(base * (1 + max(throttle_count, 0)), 300)
 
 
 def _parse_config(value):
@@ -172,49 +178,48 @@ class JobViewSet(viewsets.GenericViewSet):
         if input_mode == "csv":
             csv_rows = _parse_csv(data["csv_file"])
             config = _parse_config(request.data.get("config"))
-            # Mark this as CSV processing for sleep time functionality
-            config["is_csv_processing"] = True
             payload = {
                 "rows": csv_rows,
                 "config": config,
-                "input_type": "csv",
                 "csv_meta": {
                     "filename": data["csv_file"].name,
                     "row_count": len(csv_rows),
                 },
             }
-        else:
-            # Mark this as JSON processing
-            if "config" not in payload:
-                payload["config"] = {}
-            payload["config"]["is_csv_processing"] = False
-            payload["input_type"] = "json"
 
         idempotency_key = (
             data.get("idempotency_key")
             or payload.get("config", {}).get("idempotencyKey")
             or payload.get("config", {}).get("idempotency_key")
         )
-        
-        # Enhanced idempotency key functionality with 100% accuracy
         if idempotency_key:
-            # Check for existing job with same idempotency key for this user
-            existing_job = Job.objects.filter(
-                tenant=request.user, 
-                idempotency_key=idempotency_key
-            ).order_by('-created_at').first()
-            
-            if existing_job:
-                # If the existing job is completed or failed, allow creating a new one
-                # but with the same idempotency key to ensure idempotency
-                if existing_job.status in [JobStatus.DONE, JobStatus.FAILED, JobStatus.DLQ]:
-                    # Create new job with same idempotency key
-                    pass
-                else:
-                    # If job is still pending/running, return the existing one
-                    return api_response(JobSerializer(existing_job).data)
+            existing = Job.objects.filter(
+                tenant=request.user, idempotency_key=idempotency_key
+            ).first()
+            if existing:
+                return api_response(JobSerializer(existing).data)
 
         _enforce_jobs_per_min_limit(request.user)
+
+        concurrent_limit = getattr(settings, "CONCURRENT_JOBS_LIMIT", 2)
+        running_now = 0
+        if concurrent_limit:
+            running_now = Job.objects.filter(
+                tenant=request.user, status=JobStatus.RUNNING
+            ).count()
+        status_value = JobStatus.PENDING
+        next_run_at = None
+        throttle_count = 0
+        throttled_metadata = None
+        if concurrent_limit and running_now >= concurrent_limit:
+            backoff = _throttle_backoff_seconds(0)
+            status_value = JobStatus.THROTTLED
+            next_run_at = timezone.now() + timedelta(seconds=backoff)
+            throttle_count = 1
+            throttled_metadata = {
+                "next_run_at": next_run_at.isoformat(),
+                "throttle_count": throttle_count,
+            }
 
         total_rows = len(payload.get("rows", []))
         max_attempts = data.get("max_attempts") or 3
@@ -223,7 +228,7 @@ class JobViewSet(viewsets.GenericViewSet):
             job = Job.objects.create(
                 tenant=request.user,
                 label=data["label"],
-                status=JobStatus.PENDING,
+                status=status_value,
                 stage=JobStage.VALIDATING,
                 progress=0,
                 processed_rows=0,
@@ -235,25 +240,26 @@ class JobViewSet(viewsets.GenericViewSet):
                 output_result={},
                 events=[],
                 last_ran_at=timezone.now(),
+                next_run_at=next_run_at,
+                throttle_count=throttle_count,
             )
         except IntegrityError:
-            # Handle race condition where another job with same idempotency key was created
-            # Return the existing job to maintain idempotency
-            existing_job = Job.objects.filter(
-                tenant=request.user, 
-                idempotency_key=idempotency_key
-            ).order_by('-created_at').first()
-            if existing_job:
-                return api_response(JobSerializer(existing_job).data)
-            else:
-                # This should not happen, but handle gracefully
-                raise exceptions.ValidationError("Idempotency key conflict. Please try again.")
+            if idempotency_key:
+                existing = Job.objects.filter(
+                    tenant=request.user, idempotency_key=idempotency_key
+                ).first()
+                if existing:
+                    return api_response(JobSerializer(existing).data)
+            raise
         job.add_event(JobEventType.SUBMITTED)
+        if status_value == JobStatus.THROTTLED and throttled_metadata:
+            job.add_event(JobEventType.THROTTLED, throttled_metadata)
         job.save()
         JobTrigger.objects.create(tenant=request.user, job=job, triggered_at=timezone.now())
         from .tasks import proc
 
-        transaction.on_commit(lambda: proc.delay(str(job.id)))
+        if job.status == JobStatus.PENDING:
+            transaction.on_commit(lambda: proc.delay(str(job.id)))
         return api_response(JobSerializer(job).data, status_code=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
@@ -439,6 +445,49 @@ class JobViewSet(viewsets.GenericViewSet):
             job.add_event(
                 JobEventType.RETRY_SCHEDULED,
                 {"nextRetryAt": job.next_retry_at.isoformat()},
+            )
+
+        job.save()
+        return api_response(JobSerializer(job).data)
+
+    @action(detail=True, methods=["post"])
+    def force_fail(self, request, pk=None):
+        job = self.get_object()
+        if job.status != JobStatus.RUNNING:
+            raise exceptions.ValidationError("Only running jobs can be failed.")
+        serializer = JobActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data.get("reason") or "Manually failed while processing."
+
+        job.attempts += 1
+        job.failure_reason = reason
+        job.stage = JobStage.VALIDATING
+        job.locked_by = None
+        job.lease_until = None
+        job.next_retry_at = None
+        job.next_run_at = None
+
+        if job.attempts >= job.max_attempts:
+            job.status = JobStatus.DLQ
+            job.add_event(
+                JobEventType.FAILED,
+                {"reason": job.failure_reason, "attempt": job.attempts, "manual": True},
+            )
+            job.add_event(
+                JobEventType.MOVED_TO_DLQ,
+                {"reason": job.failure_reason, "manual": True},
+            )
+        else:
+            job.status = JobStatus.FAILED
+            retry_in = int(getattr(settings, "JOB_RETRY_DELAY_SECONDS", 5))
+            job.next_retry_at = timezone.now() + timedelta(seconds=retry_in)
+            job.add_event(
+                JobEventType.FAILED,
+                {"reason": job.failure_reason, "attempt": job.attempts, "manual": True},
+            )
+            job.add_event(
+                JobEventType.RETRY_SCHEDULED,
+                {"nextRetryAt": job.next_retry_at.isoformat(), "manual": True},
             )
 
         job.save()

@@ -227,3 +227,13 @@ export const replayJob = async (token: string, jobId: string) => {
   const data = await parseResponse<ApiJob>(response);
   return mapJob(data);
 };
+
+export const failJob = async (token: string, jobId: string, reason?: string) => {
+  const response = await fetch(`${API_BASE_URL}/jobs/${jobId}/force_fail/`, {
+    method: 'POST',
+    headers: buildHeaders(token),
+    body: JSON.stringify({ reason }),
+  });
+  const data = await parseResponse<ApiJob>(response);
+  return mapJob(data);
+};

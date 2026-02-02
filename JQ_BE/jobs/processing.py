@@ -1,9 +1,7 @@
-import random
-import re
-import time
 from typing import Any
 
-from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 
 
 def _normalize_list(value: Any) -> list[str]:
@@ -30,13 +28,16 @@ def _extract_config(payload: Any) -> dict:
     if strict_mode is None:
         strict_mode = config.get("strict_mode", False)
     numeric_field = config.get("numericField") or config.get("numeric_field")
+    required_fields = [field.lower() for field in required_fields]
+    dedupe_on = [field.lower() for field in dedupe_on]
+    if isinstance(numeric_field, str):
+        numeric_field = numeric_field.lower()
     return {
         "required_fields": required_fields,
         "dedupe_on": dedupe_on,
         "drop_nulls": bool(drop_nulls),
         "strict_mode": bool(strict_mode),
         "numeric_field": numeric_field,
-        "is_csv_processing": bool(config.get("is_csv_processing", False)),
     }
 
 
@@ -48,51 +49,71 @@ def _is_null(value: Any) -> bool:
     return False
 
 
-def _validate_email(email: str) -> bool:
-    """Validate email format using regex."""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return re.match(pattern, email) is not None
+def _get_value_case_insensitive(row: dict, field: str) -> Any:
+    if field in row:
+        return row.get(field)
+    field_lower = field.lower()
+    for key, value in row.items():
+        if str(key).lower() == field_lower:
+            return value
+    return None
 
 
-def _validate_age(age: Any) -> bool:
-    """Validate age is between 0 and 100."""
+def _row_has_field(row: dict, field: str) -> bool:
+    field_lower = field.lower()
+    for key in row.keys():
+        if str(key).lower() == field_lower:
+            return True
+    return False
+
+
+def _is_valid_email(value: Any) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        value = str(value)
+    value = value.strip()
+    if not value:
+        return False
     try:
-        age_num = float(age)
-        return 0 < age_num < 100
-    except (ValueError, TypeError):
+        validate_email(value)
+    except ValidationError:
         return False
+    return True
 
 
-def _validate_name(name: str) -> bool:
-    """Validate name length is greater than 2 letters."""
-    if not isinstance(name, str):
+def _is_valid_age(value: Any) -> bool:
+    if value is None:
         return False
-    return len(name.strip()) > 2
+    try:
+        age = float(value)
+    except (TypeError, ValueError):
+        return False
+    return 0 < age < 100
 
 
-def _validate_row_data(row: dict) -> dict:
-    """Apply validation logic to row data."""
-    validation_errors = []
-    
-    # Email validation
-    if 'email' in row:
-        if not _validate_email(str(row['email'])):
-            validation_errors.append("Invalid email format")
-    
-    # Age validation
-    if 'age' in row:
-        if not _validate_age(row['age']):
-            validation_errors.append("Age must be between 0 and 100")
-    
-    # Name validation
-    if 'name' in row:
-        if not _validate_name(str(row['name'])):
-            validation_errors.append("Name must be greater than 2 letters")
-    
-    return {
-        'is_valid': len(validation_errors) == 0,
-        'errors': validation_errors
-    }
+def _is_valid_name(value: Any) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        value = str(value)
+    return len(value.strip()) > 2
+
+
+def _passes_basic_validation(row: dict) -> bool:
+    if _row_has_field(row, "email") and not _is_valid_email(
+        _get_value_case_insensitive(row, "email")
+    ):
+        return False
+    if _row_has_field(row, "age") and not _is_valid_age(
+        _get_value_case_insensitive(row, "age")
+    ):
+        return False
+    if _row_has_field(row, "name") and not _is_valid_name(
+        _get_value_case_insensitive(row, "name")
+    ):
+        return False
+    return True
 
 
 def _process_rows(rows: list, config: dict) -> dict:
@@ -102,17 +123,6 @@ def _process_rows(rows: list, config: dict) -> dict:
     strict_mode = config.get("strict_mode", False)
     required_set = set(required_fields)
     seen = set()
-    
-    # Check if this is CSV data processing
-    is_csv_processing = config.get("is_csv_processing", False)
-    is_json_processing = not is_csv_processing  # JSON processing if not CSV
-    json_delay_min = float(
-        getattr(settings, "JOB_JSON_ROW_DELAY_MIN_SECONDS", 2)
-    )
-    json_delay_max = float(
-        getattr(settings, "JOB_JSON_ROW_DELAY_MAX_SECONDS", json_delay_min)
-    )
-    csv_row_delay = float(getattr(settings, "JOB_CSV_ROW_DELAY_SECONDS", 0.1))
 
     valid_rows = []
     invalid_rows = 0
@@ -120,28 +130,23 @@ def _process_rows(rows: list, config: dict) -> dict:
     duplicates_removed = 0
 
     for row in rows:
-        # Add sleep time before validating each row
-        if is_csv_processing:
-            time.sleep(csv_row_delay)
-        elif is_json_processing:
-            time.sleep(random.uniform(json_delay_min, json_delay_max))
-        
         if not isinstance(row, dict):
             invalid_rows += 1
             continue
-        
-        # Apply validation logic
-        validation_result = _validate_row_data(row)
-        if not validation_result['is_valid']:
-            invalid_rows += 1
-            continue
 
+        row_keys_lower = {str(key).lower() for key in row.keys()}
         if required_fields:
-            missing_required = [field for field in required_fields if field not in row]
+            missing_required = [
+                field for field in required_fields if field.lower() not in row_keys_lower
+            ]
             if missing_required:
                 invalid_rows += 1
                 continue
-            missing_values = [field for field in required_fields if _is_null(row.get(field))]
+            missing_values = [
+                field
+                for field in required_fields
+                if _is_null(_get_value_case_insensitive(row, field))
+            ]
             if missing_values:
                 if drop_nulls:
                     nulls_dropped += 1
@@ -149,7 +154,7 @@ def _process_rows(rows: list, config: dict) -> dict:
                 continue
 
         if strict_mode and required_set:
-            extra_fields = set(row.keys()) - required_set
+            extra_fields = row_keys_lower - required_set
             if extra_fields:
                 invalid_rows += 1
                 continue
@@ -161,8 +166,14 @@ def _process_rows(rows: list, config: dict) -> dict:
                 invalid_rows += 1
                 continue
 
+        if not _passes_basic_validation(row):
+            invalid_rows += 1
+            continue
+
         if dedupe_on:
-            key = tuple(str(row.get(field, "")) for field in dedupe_on)
+            key = tuple(
+                str(_get_value_case_insensitive(row, field) or "") for field in dedupe_on
+            )
             if key in seen:
                 duplicates_removed += 1
                 continue
@@ -183,7 +194,7 @@ def _compute_numeric_stats(rows: list, numeric_field: str) -> dict | None:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        value = row.get(numeric_field)
+        value = _get_value_case_insensitive(row, numeric_field)
         if isinstance(value, (int, float)):
             values.append(value)
         else:
@@ -208,7 +219,6 @@ def build_output_result(payload: Any) -> dict:
     rows = payload.get("rows") if isinstance(payload, dict) else []
     rows = rows if isinstance(rows, list) else []
     config = _extract_config(payload)
-    
     total_processed = len(rows)
     processed = _process_rows(rows, config)
     numeric_field = config.get("numeric_field")

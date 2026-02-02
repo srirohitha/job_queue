@@ -2,6 +2,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 
@@ -67,13 +68,13 @@ class Job(models.Model):
         indexes = [
             models.Index(fields=["tenant", "status"]),
             models.Index(fields=["created_at"]),
-            models.Index(fields=["tenant", "idempotency_key"]),
+            models.Index(fields=["tenant", "idempotency_key"], name="jobs_job_tenant__5f331d_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["tenant", "idempotency_key"], 
-                condition=models.Q(idempotency_key__isnull=False),
-                name="unique_tenant_idempotency_key"
+                fields=["tenant", "idempotency_key"],
+                name="unique_tenant_idempotency_key",
+                condition=Q(idempotency_key__isnull=False),
             )
         ]
 

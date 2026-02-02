@@ -27,6 +27,8 @@ import { useJobPolling } from '../hooks/useJobPolling';
 interface JobsTableProps {
   jobs: Job[];
   limit?: number;
+  concurrentJobs?: number;
+  concurrentJobsLimit?: number;
 }
 
 const statusColors = {
@@ -45,8 +47,8 @@ const stageColors = {
   DONE: 'bg-green-100 text-green-700 border-green-300',
 };
 
-export function JobsTable({ jobs, limit }: JobsTableProps) {
-  const { retryJob, replayJob, deleteJob, refreshJobs, isServerDown } = useJobs();
+export function JobsTable({ jobs, limit, concurrentJobs, concurrentJobsLimit }: JobsTableProps) {
+  const { retryJob, replayJob, failJob, deleteJob, refreshJobs, isServerDown } = useJobs();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | JobStatus>('ALL');
   const [timeRange, setTimeRange] = useState('all');
@@ -54,6 +56,15 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const isOffline = isServerDown;
+  const runningCount = concurrentJobs ?? jobs.filter(job => job.status === 'RUNNING').length;
+  const runningLimit = concurrentJobsLimit ?? 2;
+
+  const getDisplayStatus = (job: Job): JobStatus => {
+    if (job.status === 'PENDING' && runningCount >= runningLimit) {
+      return 'THROTTLED';
+    }
+    return job.status;
+  };
 
   useJobPolling({
     enabled: autoRefresh,
@@ -77,6 +88,17 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
     const updated = await replayJob(job.id);
     if (updated) {
       toast.success(`Job "${job.label}" replayed from DLQ`);
+    }
+  };
+
+  const handleFail = async (job: Job) => {
+    const confirmed = window.confirm(`Fail job "${job.label}"? It will stop processing and can be retried from the beginning.`);
+    if (!confirmed) {
+      return;
+    }
+    const updated = await failJob(job.id, 'Manually failed while processing.');
+    if (updated) {
+      toast.success(`Job "${job.label}" failed`);
     }
   };
 
@@ -130,10 +152,11 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
 
   // Filter and sort jobs
   let filteredJobs = jobs.filter(job => {
+    const displayStatus = getDisplayStatus(job);
     const matchesSearch = !query ||
       job.id.toLowerCase().includes(query) ||
       job.label.toLowerCase().includes(query);
-    const matchesStatus = statusFilter === 'ALL' || job.status === statusFilter;
+    const matchesStatus = statusFilter === 'ALL' || displayStatus === statusFilter;
     const matchesRange = matchesTimeRange(job.createdAt);
     return matchesSearch && matchesStatus && matchesRange;
   });
@@ -273,6 +296,7 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                 </TableHeader>
                 <TableBody>
                   {filteredJobs.map((job) => {
+                    const displayStatus = getDisplayStatus(job);
                     return (
                     <TableRow key={job.id} className="hover:bg-gray-50">
                       <TableCell className="font-mono text-xs">
@@ -292,8 +316,8 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                       </TableCell>
                       <TableCell className="font-medium">{job.label}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={cn('border', statusColors[job.status])}>
-                          {job.status}
+                        <Badge variant="outline" className={cn('border', statusColors[displayStatus])}>
+                          {displayStatus}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -325,6 +349,17 @@ export function JobsTable({ jobs, limit }: JobsTableProps) {
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-2">
+                          {job.status === 'RUNNING' && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleFail(job)}
+                              disabled={isOffline}
+                              className="text-red-600 border-red-200 hover:text-red-700"
+                            >
+                              Fail
+                            </Button>
+                          )}
                           {(job.status === 'FAILED' || job.status === 'DONE') && (
                             <Button
                               variant="outline"

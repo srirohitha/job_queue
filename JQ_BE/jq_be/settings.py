@@ -81,6 +81,9 @@ else:
             "default": {
                 "ENGINE": "django.db.backends.sqlite3",
                 "NAME": BASE_DIR / "db.sqlite3",
+                "OPTIONS": {
+                    "timeout": 30,
+                },
             }
         }
 
@@ -136,6 +139,7 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_DEFAULT_QUEUE = "jobs"
+CELERY_IMPORTS = ("jobs.tasks",)
 CELERY_TASK_ROUTES = {
     "jobs.proc": {"queue": "jobs"},
     "jobs.reconcile": {"queue": "reconcile"},
@@ -152,6 +156,13 @@ JOB_JSON_ROW_DELAY_MIN_SECONDS = float(
 JOB_JSON_ROW_DELAY_MAX_SECONDS = float(
     os.getenv("JOB_JSON_ROW_DELAY_MAX_SECONDS", "3")
 )
+JOB_CSV_BATCH_SIZE = int(os.getenv("JOB_CSV_BATCH_SIZE", "2000"))
+JOB_CSV_BATCH_DELAY_SECONDS = float(
+    os.getenv("JOB_CSV_BATCH_DELAY_SECONDS", "0")
+)
+JOB_CSV_TARGET_ROWS = int(os.getenv("JOB_CSV_TARGET_ROWS", "50000"))
+JOB_CSV_TARGET_SECONDS = float(os.getenv("JOB_CSV_TARGET_SECONDS", "15"))
+JOB_CSV_PROGRESS_UPDATES = int(os.getenv("JOB_CSV_PROGRESS_UPDATES", "100"))
 JOB_MIN_RUNNING_SECONDS = float(os.getenv("JOB_MIN_RUNNING_SECONDS", "6"))
 
 CELERY_BEAT_SCHEDULE = {
