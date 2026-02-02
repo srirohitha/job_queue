@@ -12,6 +12,24 @@
 
 The API will be available at `http://localhost:8000/api`.
 
+## Docker quickstart
+
+From the repo root:
+
+```
+docker compose up --build
+```
+
+Services:
+- Backend API: `http://localhost:8000/api`
+- Frontend UI: `http://localhost:5173`
+
+Stop everything with:
+
+```
+docker compose down
+```
+
 ## Background Processing (Celery + Redis)
 
 This backend uses Celery for job processing and Redis as the broker.

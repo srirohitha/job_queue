@@ -1,0 +1,110 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: jq
+      POSTGRES_USER: jq
+      POSTGRES_PASSWORD: jq
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jq -d jq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./JQ_BE
+    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    environment:
+      DJANGO_DEBUG: "true"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      POSTGRES_DB: jq
+      POSTGRES_USER: jq
+      POSTGRES_PASSWORD: jq
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./JQ_BE
+    command: celery -A jq_be worker -l info -Q jobs,celery --concurrency=2
+    environment:
+      DJANGO_DEBUG: "true"
+      POSTGRES_DB: jq
+      POSTGRES_USER: jq
+      POSTGRES_PASSWORD: jq
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: ./JQ_BE
+    command: celery -A jq_be beat -l info
+    environment:
+      DJANGO_DEBUG: "true"
+      POSTGRES_DB: jq
+      POSTGRES_USER: jq
+      POSTGRES_PASSWORD: jq
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  reconcile:
+    build: ./JQ_BE
+    command: celery -A jq_be worker -l info -Q reconcile --pool=solo
+    environment:
+      DJANGO_DEBUG: "true"
+      POSTGRES_DB: jq
+      POSTGRES_USER: jq
+      POSTGRES_PASSWORD: jq
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./JQ_FE
+    environment:
+      VITE_API_BASE_URL: "http://localhost:8000/api"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
